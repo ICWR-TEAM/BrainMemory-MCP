@@ -5,7 +5,7 @@
 Project Start Date: 2026-07-21
 Last Update Project: 2026-07-21
 Project Phase: MVP Implemented — first working server
-Project Status: Active — installable Python MCP server with SSE + Cognitive tools
+Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports and Cognitive tools
 
 ---
 
@@ -62,11 +62,13 @@ Define AI responsibility, expected behavior, and operational boundaries.
 
 Describe:
 - **Programming language:** Python 3.11+ (verified on 3.13).
-- **Framework:** Official `mcp` SDK's `FastMCP`, serving tools over HTTP + SSE.
-  Web layer is ASGI (Starlette + Uvicorn), pulled in transitively by `mcp`
-  plus pinned as explicit deps.
-- **Infrastructure:** Standalone HTTP server with Server-Sent Events (SSE)
-  transport. SSE stream at `/sse`, message POST at `/messages/`.
+- **Framework:** Official `mcp` SDK's `FastMCP`, serving tools over two
+  transports: **stdio** (default; ideal for `uvx brainmemory-mcp`) and
+  **HTTP + SSE** (enabled with `--web`). Web layer is ASGI (Starlette +
+  Uvicorn), pulled in transitively by `mcp` plus pinned as explicit deps.
+- **Infrastructure:** Runs as a stdio subprocess by default; with `--web`
+  runs as a standalone HTTP server with Server-Sent Events (SSE) transport
+  (SSE stream at `/sse`, message POST at `/messages/`).
 - **Database:** SQLite (stdlib `sqlite3`, WAL mode) at
   `~/.brainmemory-mcp/memory.db`. Location overridable via `--data-dir` or
   `$BRAINMEMORY_HOME`.
@@ -101,8 +103,8 @@ README.md                      # usage & install docs
 .gitignore
 src/brainmemory_mcp/
     __init__.py                # package exports + version
-    __main__.py                # CLI entry point (argparse: --host/--port/--data-dir)
-    server.py                  # FastMCP server, Cognitive tools, SSE run()
+    __main__.py                # CLI entry point (argparse: --web/--host/--port/--data-dir)
+    server.py                  # FastMCP server, Cognitive tools, run(web=...) stdio|SSE
     memory.py                  # SQLite-backed MemoryStore + Memory model
 .github/workflows/publish.yml   # CI: build + Trusted-Publishing to PyPI
 docs/RELEASING.md              # how to cut a release / publish to PyPI
@@ -113,8 +115,9 @@ NOTE.md
 ## Core Flow Project
 
 Describe:
-- **Input:** MCP tool invocations arriving from an MCP client over HTTP/SSE
-  (cognitive tool calls such as store/recall/search a memory).
+- **Input:** MCP tool invocations arriving from an MCP client over stdio
+  (default) or HTTP/SSE (`--web`) — cognitive tool calls such as
+  store/recall/search a memory.
 - **Processing:** `FastMCP` routes each tool call to its handler in
   `server.py`, which delegates to `MemoryStore` (`memory.py`).
 - **Logic:** Cognitive tools implement memory operations — persisting new
@@ -157,6 +160,15 @@ script `brainmemory-mcp`.
 Reason: Makes the tool installable via `python3 -m pip install .` and runnable
 as a command or `python3 -m brainmemory_mcp`.
 Impact: Standard, clean packaging; editable installs supported for dev.
+
+Date: 2026-07-21
+Decision: Support two transports — stdio (default) and HTTP+SSE via `--web`.
+Reason: stdio is the least-friction path for local MCP clients that launch
+the server as a subprocess (matches the requested `uvx brainmemory-mcp`
+config: no port/bind, auto lifecycle). SSE stays available for remote use.
+Impact: `run()` gained a `web` flag; `__main__` gained `--web`
+(env `BRAINMEMORY_WEB`). In stdio mode logs go to stderr (stdout is the
+protocol channel); in web mode endpoints are logged to stdout as before.
 
 ## Current State
 

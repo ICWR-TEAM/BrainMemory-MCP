@@ -4,8 +4,14 @@ A **Model Context Protocol (MCP)** server that gives AI/LLM agents a durable
 **brain memory** — the ability to store, recall, search, summarize, and forget
 information across sessions through standardized MCP tool calls.
 
-The server speaks MCP over **HTTP + Server-Sent Events (SSE)**, so remote
-MCP-capable clients (Claude, IDE agents, etc.) can connect over the network.
+The server runs in two modes:
+
+- **stdio** (default) — the server is launched as a subprocess by an MCP
+  client (e.g. via `uvx brainmemory-mcp`).
+- **web** — MCP over **HTTP + Server-Sent Events (SSE)** with `--web`, so
+  remote MCP-capable clients (Claude, IDE agents, etc.) can connect over the
+  network.
+
 Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 
 ## Cognitive Tools
@@ -48,18 +54,34 @@ To build/publish a release, see [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Run
 
-```bash
-# Defaults: 127.0.0.1:8765, memory in ~/.brainmemory-mcp
-brainmemory-mcp
+### stdio mode (default)
 
-# Custom host/port and memory location
-brainmemory-mcp --host 0.0.0.0 --port 9000 --data-dir /path/to/memory
+Best for local MCP clients that launch the server themselves. Memory in
+`~/.brainmemory-mcp`.
+
+```bash
+brainmemory-mcp
 
 # Or without the console script
 python3 -m brainmemory_mcp
+
+# With a custom memory location
+brainmemory-mcp --data-dir /path/to/memory
 ```
 
-Endpoints once running:
+### Web mode (HTTP + SSE)
+
+Enable with `--web` for remote / networked clients.
+
+```bash
+# Defaults: 127.0.0.1:8765, memory in ~/.brainmemory-mcp
+brainmemory-mcp --web
+
+# Custom host/port and memory location
+brainmemory-mcp --web --host 0.0.0.0 --port 9000 --data-dir /path/to/memory
+```
+
+Endpoints once running in web mode:
 
 - SSE stream:      `http://<host>:<port>/sse`
 - Message POST:    `http://<host>:<port>/messages/`
@@ -68,14 +90,35 @@ Endpoints once running:
 
 | Option | Env var | Default |
 |--------|---------|---------|
+| `--web` | `BRAINMEMORY_WEB` | `false` (stdio) |
 | `--host` | `BRAINMEMORY_HOST` | `127.0.0.1` |
 | `--port` | `BRAINMEMORY_PORT` | `8765` |
 | `--data-dir` | `BRAINMEMORY_HOME` | `~/.brainmemory-mcp` |
 
 ## Connect a client
 
-Point any MCP client that supports SSE at the `/sse` endpoint. Example client
-configuration (URL-based transport):
+### stdio (recommended for local use)
+
+Configure the client to launch the server as a subprocess:
+
+```json
+{
+  "mcpServers": {
+    "brainmemory": {
+      "command": "uvx",
+      "args": ["brainmemory-mcp"]
+    }
+  }
+}
+```
+
+If installed on your `PATH`, you can use `"command": "brainmemory-mcp"` with
+`"args": []` instead.
+
+### Web (SSE)
+
+Start the server with `--web`, then point an SSE-capable client at the `/sse`
+endpoint:
 
 ```json
 {

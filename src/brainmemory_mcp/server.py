@@ -1,8 +1,12 @@
 """BrainMemory-MCP server.
 
-Exposes Cognitive memory tools over the Model Context Protocol using the
-HTTP + Server-Sent Events (SSE) transport. Built on the official ``mcp`` SDK
-(``FastMCP``).
+Exposes Cognitive memory tools over the Model Context Protocol. Two transports
+are supported, both built on the official ``mcp`` SDK (``FastMCP``):
+
+- **stdio** (default): ideal for local MCP clients that launch the server as a
+  subprocess, e.g. ``uvx brainmemory-mcp``.
+- **HTTP + Server-Sent Events (SSE)**: enabled with ``--web`` for remote /
+  networked MCP clients. Stream at ``/sse``, message POST at ``/messages/``.
 
 Cognitive tools:
     - store_memory        : persist a new memory
@@ -16,6 +20,7 @@ Cognitive tools:
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -198,17 +203,39 @@ def create_server(
 
 def run(
     *,
+    web: bool = False,
     host: str = "127.0.0.1",
     port: int = 8765,
     data_dir: str | None = None,
 ) -> None:
-    """Create the server and run it over the SSE transport."""
+    """Create the server and run it.
+
+    Args:
+        web: When ``True``, serve over HTTP + SSE. Otherwise use stdio
+            (the default), suitable for ``uvx brainmemory-mcp`` and clients
+            that launch the server as a subprocess.
+        host: Interface to bind in web mode.
+        port: TCP port to listen on in web mode.
+        data_dir: Directory to persist memories in.
+    """
     server = create_server(host=host, port=port, data_dir=data_dir)
     resolved_dir = data_dir or str(default_data_dir())
-    print(
-        f"BrainMemory-MCP (SSE) listening on http://{host}:{port}/sse\n"
-        f"  message endpoint : http://{host}:{port}/messages/\n"
-        f"  memory directory : {resolved_dir}",
-        flush=True,
-    )
-    server.run(transport="sse")
+
+    if web:
+        # Web (SSE) mode: it is safe to log to stdout.
+        print(
+            f"BrainMemory-MCP (SSE) listening on http://{host}:{port}/sse\n"
+            f"  message endpoint : http://{host}:{port}/messages/\n"
+            f"  memory directory : {resolved_dir}",
+            flush=True,
+        )
+        server.run(transport="sse")
+    else:
+        # stdio mode: stdout is reserved for the MCP protocol, so log to stderr.
+        print(
+            f"BrainMemory-MCP (stdio) ready.\n"
+            f"  memory directory : {resolved_dir}",
+            file=sys.stderr,
+            flush=True,
+        )
+        server.run(transport="stdio")
