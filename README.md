@@ -24,17 +24,27 @@ A read-only resource `brainmemory://stats` exposes the same summary as JSON.
 
 ## Install
 
+From PyPI (once published):
+
+```bash
+python3 -m pip install brainmemory-mcp
+```
+
+From a local checkout:
+
 ```bash
 python3 -m pip install .
 ```
 
-This installs the package and a console script named `brainmemory-mcp`.
+Both install the package and a console script named `brainmemory-mcp`.
 
 For development (editable install):
 
 ```bash
 python3 -m pip install -e ".[dev]"
 ```
+
+To build/publish a release, see [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Run
 

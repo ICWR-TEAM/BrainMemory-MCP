@@ -79,9 +79,14 @@ Describe:
   - `forget_memory(memory_id)`
   - `summarize_memories()`
   - Resource: `brainmemory://stats` (JSON summary).
-- **Packaging:** `pyproject.toml` (setuptools, `src/` layout). Installable via
-  `python3 -m pip install .`; exposes console script `brainmemory-mcp` and
-  `python3 -m brainmemory_mcp`.
+- **Packaging:** `pyproject.toml` (PEP 621 / setuptools, `src/` layout).
+  Version is single-sourced from `brainmemory_mcp.__version__` via
+  `[tool.setuptools.dynamic]`. Installable via `pip install brainmemory-mcp`
+  (PyPI, once published) or `pip install .`; exposes console script
+  `brainmemory-mcp` and `python3 -m brainmemory_mcp`.
+- **Release/PyPI:** `.github/workflows/publish.yml` builds sdist+wheel, runs
+  `twine check`, and publishes to PyPI via **Trusted Publishing** (OIDC) on a
+  `v*` tag / GitHub Release. Process documented in `docs/RELEASING.md`.
 - **Deployment model:** Standalone HTTP MCP server (containerizable).
 - **Coding convention:** PEP 8 + type hints; `ruff`/`black` configured
   (line-length 100).
@@ -99,6 +104,8 @@ src/brainmemory_mcp/
     __main__.py                # CLI entry point (argparse: --host/--port/--data-dir)
     server.py                  # FastMCP server, Cognitive tools, SSE run()
     memory.py                  # SQLite-backed MemoryStore + Memory model
+.github/workflows/publish.yml   # CI: build + Trusted-Publishing to PyPI
+docs/RELEASING.md              # how to cut a release / publish to PyPI
 docs/changelog/2026/07/21.md
 NOTE.md
 ```
@@ -192,8 +199,10 @@ Possible Solution: Add an embedding provider + vector index alongside SQLite.
 
 Issue: No automated tests / CI yet.
 Priority: Medium
-Status: Open
-Possible Solution: Add pytest suite covering MemoryStore and tool handlers.
+Status: Partial — a build/publish CI (`.github/workflows/publish.yml`) now runs
+`python -m build` + `twine check` on push/PR. Test suite still missing.
+Possible Solution: Add a pytest suite covering MemoryStore and tool handlers,
+and run it in CI on every push/PR.
 
 ## Changelog Reference
 
