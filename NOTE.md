@@ -4,7 +4,7 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-07-21
-Project Phase: MVP Implemented — first working server
+Project Phase: MVP + published — dual-transport server on PyPI (v0.2.0)
 Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports and Cognitive tools
 
 ---
@@ -169,6 +169,16 @@ config: no port/bind, auto lifecycle). SSE stays available for remote use.
 Impact: `run()` gained a `web` flag; `__main__` gained `--web`
 (env `BRAINMEMORY_WEB`). In stdio mode logs go to stderr (stdout is the
 protocol channel); in web mode endpoints are logged to stdout as before.
+
+Date: 2026-07-21
+Decision: Publish v0.2.0 to PyPI (v0.1.0 was SSE-only and broke `uvx`).
+Reason: The first PyPI release (0.1.0) defaulted to SSE transport, so
+`uvx brainmemory-mcp` in a stdio MCP client started an HTTP server and never
+spoke the stdio protocol -> the server failed to load. PyPI releases are
+immutable, so the stdio-default fix ships as 0.2.0.
+Impact: `uvx brainmemory-mcp` now works out of the box for stdio clients.
+Version bumped in `brainmemory_mcp.__version__`. Published via `twine` (API
+token) after `uv build` + `twine check`.
 
 ## Current State
 
