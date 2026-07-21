@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# BrainMemory local data (never commit real memories)
+.brainmemory-mcp/
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store

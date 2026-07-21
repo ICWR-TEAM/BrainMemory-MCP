@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brainmemory-mcp"
+version = "0.1.0"
+description = "BrainMemory-MCP — a Model Context Protocol server exposing Cognitive memory tools over HTTP + SSE."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "BrainMemory-MCP maintainers" }]
+keywords = ["mcp", "model-context-protocol", "memory", "sse", "cognitive", "llm", "agent"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "starlette>=0.37.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.5.0", "black>=24.0.0"]
+
+[project.scripts]
+brainmemory-mcp = "brainmemory_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/venturo/BrainMemory-MCP"
+Repository = "https://github.com/venturo/BrainMemory-MCP"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
