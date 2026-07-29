@@ -3,8 +3,8 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-07-21
-Project Phase: MVP + published — dual-transport server on PyPI (v0.2.0)
+Last Update Project: 2026-07-29
+Project Phase: MVP + published — dual-transport server on PyPI (v0.3.1)
 Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports and Cognitive tools
 
 ---
@@ -180,6 +180,19 @@ Impact: `uvx brainmemory-mcp` now works out of the box for stdio clients.
 Version bumped in `brainmemory_mcp.__version__`. Published via `twine` (API
 token) after `uv build` + `twine check`.
 
+Date: 2026-07-29
+Decision: Pin the `mcp` dependency to `>=1.2.0,<2` and hotfix-release v0.3.1.
+Reason: `mcp` 2.0.0 removed the `mcp.server.fastmcp` module that `server.py`
+imports (`from mcp.server.fastmcp import FastMCP`). Because the dependency was
+declared as `mcp>=1.2.0` (no upper bound), `uvx brainmemory-mcp` began pulling
+`mcp==2.0.0` the moment it was published, breaking every fresh install with
+`ModuleNotFoundError: No module named 'mcp.server.fastmcp'` — even though the
+package worked the day before.
+Impact: New installs resolve `mcp` in the 1.x line again and import correctly.
+PyPI releases are immutable, so the fix ships as 0.3.1 (0.3.0 was already
+published). No API/tool changes. A future task may migrate to the mcp 2.0 API
+to lift the `<2` cap.
+
 ## Current State
 
 MVP implemented and verified locally:
@@ -214,6 +227,12 @@ Status: Open
 Possible Solution: Add token-based auth and TLS before any non-local deployment;
 default bind remains 127.0.0.1 for now.
 
+Issue: `mcp` dependency had no upper bound, so `mcp` 2.0.0 (which removed
+`mcp.server.fastmcp`) broke `uvx brainmemory-mcp` on fresh installs.
+Priority: High
+Status: Resolved — pinned `mcp>=1.2.0,<2` and released v0.3.1 to PyPI.
+Possible Solution: Longer term, migrate to the `mcp` 2.0 API and lift the cap.
+
 Issue: Semantic recall (embeddings) not implemented.
 Priority: Low
 Status: Open
@@ -230,4 +249,4 @@ and run it in CI on every push/PR.
 
 Daily and version history is tracked under [`docs/changelog/`](docs/changelog/).
 See `docs/changelog/[yyyy]/[mm]/[dd].md` for per-day entries. Latest:
-`docs/changelog/2026/07/21.md`.
+`docs/changelog/2026/07/29.md`.
