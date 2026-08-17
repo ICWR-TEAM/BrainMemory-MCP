@@ -1,8 +1,21 @@
 # BrainMemory-MCP
 
 A **Model Context Protocol (MCP)** server that gives AI/LLM agents a durable
-**brain memory** — the ability to store, recall, search, summarize, and forget
-information across sessions through standardized MCP tool calls.
+**brain memory** — the ability to store, recall, search, connect, summarize,
+and forget information across sessions through standardized MCP tool calls.
+
+Since **v0.4.0** memory is modelled internally as a small **knowledge graph**:
+
+- **memories** are the graph **nodes** (content, category, tags, importance),
+- **connections** are directed **links** between memories (e.g. `related_to`,
+  `caused_by`, `part_of`),
+- **details** are extra facts attached to a single memory.
+
+This makes recall *precise* — instead of only matching words, the server can
+walk the connections you build (multi-hop recall) and explain how two memories
+relate (shortest path). The tool vocabulary stays "memory"-oriented (no
+"entity" wording), and it is still just **SQLite** under the hood — zero extra
+dependencies.
 
 The server runs in two modes:
 
@@ -16,21 +29,35 @@ Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 
 ## Cognitive Tools
 
+### Core memory
+
 | Tool | Description |
 |------|-------------|
 | `store_memory` | Persist a new memory (content, category, tags, importance). |
-| `recall_memory` | Fetch a single memory by its id. |
-| `search_memory` | Find memories by free text, category, tags and/or importance. |
+| `recall_memory` | Fetch a memory by id, with its details and connections. |
+| `search_memory` | Find memories by free text, category, tags and/or importance (also searches details). |
 | `list_memories` | List stored memories (most important & recent first). |
 | `update_memory` | Modify an existing memory (only supplied fields change). |
-| `forget_memory` | Delete a memory by id. |
-| `summarize_memories` | Summary statistics: totals, categories, top tags. |
+| `forget_memory` | Delete a memory (its details and connections cascade away). |
+| `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
 
-A read-only resource `brainmemory://stats` exposes the same summary as JSON.
+### Graph memory
+
+| Tool | Description |
+|------|-------------|
+| `add_detail` | Attach an extra fact/observation to an existing memory. |
+| `link_memories` | Connect two memories with a directed relation (+ weight). |
+| `unlink_memories` | Remove connection(s) between two memories. |
+| `recall_related` | Multi-hop recall: memories connected to one memory, up to *depth* hops. |
+| `connect_memories` | Shortest connection (path) between two memories. |
+| `memory_map` | Return a map (nodes + links) of the memory graph. |
+
+Two read-only resources are exposed as JSON: `brainmemory://stats` (the summary)
+and `brainmemory://graph` (the nodes + links map).
 
 ## Install
 
-From PyPI (once published):
+From PyPI:
 
 ```bash
 python3 -m pip install brainmemory-mcp
@@ -132,10 +159,23 @@ endpoint:
 
 ## How memory is stored
 
-Memories live in `~/.brainmemory-mcp/memory.db` (SQLite, WAL mode). Each memory
-has: `id`, `content`, `category`, `tags`, `importance` (1–5), `created_at`,
-`updated_at`. Nothing is ever silently deleted — removal only happens through
-`forget_memory`.
+Memories live in `~/.brainmemory-mcp/memory.db` (SQLite, WAL mode) across three
+tables:
+
+- `memories` — nodes: `id`, `content`, `category`, `tags`, `importance` (1–5),
+  `created_at`, `updated_at`.
+- `memory_details` — extra facts attached to a memory (cascade-deleted with it).
+- `memory_links` — directed connections `source_id -> target_id` with a
+  `relation` and `weight` (cascade-deleted with either endpoint).
+
+Graph operations (multi-hop `recall_related`, shortest-path `connect_memories`,
+degree centrality in `summarize_memories`) are computed with plain SQL + a
+little Python — no external services or vector database required.
+
+Nothing is ever silently deleted — removal only happens through
+`forget_memory`, `unlink_memories`, or detail deletion. When an older
+(pre-graph) database is opened, it is **backed up automatically** to
+`~/.brainmemory-mcp/backups/` before the graph tables are added.
 
 ## License
 

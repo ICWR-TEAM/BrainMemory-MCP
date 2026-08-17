@@ -3,9 +3,9 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-07-29
-Project Phase: MVP + published — dual-transport server on PyPI (v0.3.1)
-Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports and Cognitive tools
+Last Update Project: 2026-08-17
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.4.0)
+Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports; memory modelled as a SQLite knowledge graph
 
 ---
 
@@ -31,6 +31,11 @@ Scope (initial intent):
 > Status update (2026-07-21): The MVP is implemented. The repository now
 > contains an installable Python package (`pip install .`) that runs the MCP
 > server over SSE and persists memory in a local SQLite database.
+>
+> Status update (2026-08-17): Memory is now modelled as a small **knowledge
+> graph** (memories = nodes, connections = directed links, details = attached
+> facts) for precise multi-hop recall. Still SQLite/stdlib only. Tool vocabulary
+> intentionally stays "memory"-oriented (no "entity" wording). Released v0.4.0.
 
 ## Mandatory Workflow
 
@@ -71,24 +76,44 @@ Describe:
   (SSE stream at `/sse`, message POST at `/messages/`).
 - **Database:** SQLite (stdlib `sqlite3`, WAL mode) at
   `~/.brainmemory-mcp/memory.db`. Location overridable via `--data-dir` or
-  `$BRAINMEMORY_HOME`.
+  `$BRAINMEMORY_HOME`. Since v0.4.0 the schema is a **knowledge graph**:
+  - `memories` — nodes (id, content, category, tags, importance, timestamps).
+  - `memory_details` — extra facts attached to a memory (`ON DELETE CASCADE`).
+  - `memory_links` — directed connection `source_id -> target_id` with
+    `relation` (default `related_to`) + `weight`; `UNIQUE(source,target,relation)`,
+    both endpoints `ON DELETE CASCADE`.
+  Opening a pre-graph DB auto-backs it up to
+  `~/.brainmemory-mcp/backups/memory-<UTC>.db` (SQLite online backup API) before
+  the graph tables are added — non-destructive migration.
 - **API structure (Cognitive tools):**
-  - `store_memory(content, category, tags, importance)`
-  - `recall_memory(memory_id)`
-  - `search_memory(query, category, tags, min_importance, limit)`
-  - `list_memories(limit, offset)`
-  - `update_memory(memory_id, content?, category?, tags?, importance?)`
-  - `forget_memory(memory_id)`
-  - `summarize_memories()`
-  - Resource: `brainmemory://stats` (JSON summary).
+  - Core memory:
+    - `store_memory(content, category, tags, importance)`
+    - `recall_memory(memory_id)` — returns the memory + its details + connections
+    - `search_memory(query, category, tags, min_importance, limit)` — also
+      searches attached details
+    - `list_memories(limit, offset)`
+    - `update_memory(memory_id, content?, category?, tags?, importance?)`
+    - `forget_memory(memory_id)` — cascades to details + links
+    - `summarize_memories()` — totals, categories, top tags, connection stats,
+      most-connected memories
+  - Graph memory:
+    - `add_detail(memory_id, content)`
+    - `link_memories(from_id, to_id, relation, weight)`
+    - `unlink_memories(from_id, to_id, relation?)`
+    - `recall_related(memory_id, depth, relation?, limit)` — multi-hop recall
+    - `connect_memories(from_id, to_id, max_depth)` — shortest path
+    - `memory_map(memory_id?, depth, limit)` — nodes + links map
+  - Resources: `brainmemory://stats` (JSON summary), `brainmemory://graph`
+    (JSON nodes + links map).
 - **Packaging:** `pyproject.toml` (PEP 621 / setuptools, `src/` layout).
   Version is single-sourced from `brainmemory_mcp.__version__` via
   `[tool.setuptools.dynamic]`. Installable via `pip install brainmemory-mcp`
-  (PyPI, once published) or `pip install .`; exposes console script
-  `brainmemory-mcp` and `python3 -m brainmemory_mcp`.
+  (PyPI) or `pip install .`; exposes console script `brainmemory-mcp` and
+  `python3 -m brainmemory_mcp`.
 - **Release/PyPI:** `.github/workflows/publish.yml` builds sdist+wheel, runs
   `twine check`, and publishes to PyPI via **Trusted Publishing** (OIDC) on a
-  `v*` tag / GitHub Release. Process documented in `docs/RELEASING.md`.
+  `v*` tag / GitHub Release. Manual `twine upload` with an API token is the
+  fallback. Process documented in `docs/RELEASING.md`.
 - **Deployment model:** Standalone HTTP MCP server (containerizable).
 - **Coding convention:** PEP 8 + type hints; `ruff`/`black` configured
   (line-length 100).
@@ -104,11 +129,13 @@ README.md                      # usage & install docs
 src/brainmemory_mcp/
     __init__.py                # package exports + version
     __main__.py                # CLI entry point (argparse: --web/--host/--port/--data-dir)
-    server.py                  # FastMCP server, Cognitive tools, run(web=...) stdio|SSE
-    memory.py                  # SQLite-backed MemoryStore + Memory model
+    server.py                  # FastMCP server, Cognitive + graph tools, run(web=...)
+    memory.py                  # SQLite graph store: Memory/MemoryDetail/MemoryLink + MemoryStore
 .github/workflows/publish.yml   # CI: build + Trusted-Publishing to PyPI
 docs/RELEASING.md              # how to cut a release / publish to PyPI
 docs/changelog/2026/07/21.md
+docs/changelog/2026/07/29.md
+docs/changelog/2026/08/17.md
 NOTE.md
 ```
 
@@ -117,15 +144,19 @@ NOTE.md
 Describe:
 - **Input:** MCP tool invocations arriving from an MCP client over stdio
   (default) or HTTP/SSE (`--web`) — cognitive tool calls such as
-  store/recall/search a memory.
+  store/recall/search/link/traverse a memory.
 - **Processing:** `FastMCP` routes each tool call to its handler in
   `server.py`, which delegates to `MemoryStore` (`memory.py`).
-- **Logic:** Cognitive tools implement memory operations — persisting new
-  memories, retrieving relevant memories (text/category/tag/importance filters),
-  updating, forgetting, and summarizing.
+- **Logic:** Cognitive tools implement memory operations over a knowledge
+  graph — persisting new memories (nodes), attaching details, connecting
+  memories (directed weighted links), retrieving relevant memories
+  (text/category/tag/importance filters), multi-hop recall (`recall_related`),
+  shortest-path connection (`connect_memories`), updating, forgetting
+  (cascade), and summarizing (incl. degree centrality).
 - **Output:** Tool results (JSON dicts) streamed back to the client over SSE.
 - **External integration:** MCP clients (LLM agents/IDEs); local SQLite store.
-  (No embedding/LLM provider yet — semantic recall remains future work.)
+  (No embedding/LLM provider yet — semantic recall remains future work; the
+  graph gives precise relational recall in the meantime.)
 
 ## Architecture Decision Log
 
@@ -193,12 +224,34 @@ PyPI releases are immutable, so the fix ships as 0.3.1 (0.3.0 was already
 published). No API/tool changes. A future task may migrate to the mcp 2.0 API
 to lift the `<2` cap.
 
+Date: 2026-08-17
+Decision: Re-model memory as a SQLite knowledge graph (nodes/links/details)
+while keeping "memory"-oriented tool names; release v0.4.0.
+Reason: A flat note list can only recall by literal word match. Modelling
+memories as graph nodes with directed connections enables precise, multi-hop
+recall (`recall_related`) and relationship explanation (`connect_memories`).
+The user explicitly required keeping the "memory" vocabulary (no "entity"
+naming) and staying on SQLite with no new dependencies.
+Impact: Two new tables (`memory_details`, `memory_links`) added additively;
+the `memories` table is unchanged so existing data is preserved. Opening a
+pre-graph DB auto-backs it up to `backups/` before adding graph tables. Six new
+tools (`add_detail`, `link_memories`, `unlink_memories`, `recall_related`,
+`connect_memories`, `memory_map`) plus a `brainmemory://graph` resource; the 7
+original tools keep their names (richer output). Graph algorithms use plain
+SQL + Python BFS (small data), so still zero external deps. Verified locally:
+131 existing memories preserved, backup written.
+
 ## Current State
 
-MVP implemented and verified locally:
+MVP + graph model implemented and verified locally:
 - `pip install .` builds and installs the package + console script.
-- Server starts over SSE; `/sse` returns the MCP `event: endpoint` handshake.
-- MemoryStore CRUD + search + stats verified via smoke test.
+- Server starts over stdio (default) and SSE (`--web`); `create_server()`
+  registers 13 tools + 2 resources.
+- MemoryStore CRUD + search + graph ops (link/detail/recall_related/
+  connect_memories/memory_map) + stats verified via smoke test.
+- Migration verified against the real DB: 131 memories preserved, backup
+  written to `~/.brainmemory-mcp/backups/memory-20260817T141028Z.db`, new graph
+  tables created.
 - Memory persists to `~/.brainmemory-mcp` (SQLite), overridable via `--data-dir`.
 
 ## Pending Issue
@@ -213,12 +266,14 @@ Status: Resolved — Python 3.11+, official `mcp` SDK (FastMCP) over Starlette/U
 
 Issue: Persistence/database for memory not defined.
 Priority: High
-Status: Resolved (initial) — SQLite at `~/.brainmemory-mcp/memory.db`.
+Status: Resolved — SQLite at `~/.brainmemory-mcp/memory.db`, now modelled as a
+knowledge graph (memories/details/links) since v0.4.0.
 Possible Solution: Evaluate a vector store for semantic recall later.
 
 Issue: Concrete cognitive tool set and schemas undefined.
 Priority: Medium
-Status: Resolved (initial) — 7 tools + 1 resource implemented (see Technical Details).
+Status: Resolved — 13 tools + 2 resources implemented (see Technical Details):
+7 core memory tools + 6 graph tools.
 Possible Solution: Extend with reasoning/summarization backed by an LLM.
 
 Issue: Authentication/security model for the HTTP/SSE endpoint undefined.
@@ -235,18 +290,27 @@ Possible Solution: Longer term, migrate to the `mcp` 2.0 API and lift the cap.
 
 Issue: Semantic recall (embeddings) not implemented.
 Priority: Low
+Status: Open (partially mitigated) — the knowledge graph now gives precise
+relational/multi-hop recall, but there is still no vector/semantic similarity.
+Possible Solution: Add an embedding provider + vector index alongside SQLite,
+or a `similar_to` link type populated from embeddings.
+
+Issue: Graph connections must be built manually via `link_memories`; existing
+memories start unconnected after migration.
+Priority: Low
 Status: Open
-Possible Solution: Add an embedding provider + vector index alongside SQLite.
+Possible Solution: Add an optional "suggest connections" step from shared
+tags/category co-occurrence to bootstrap the graph.
 
 Issue: No automated tests / CI yet.
 Priority: Medium
 Status: Partial — a build/publish CI (`.github/workflows/publish.yml`) now runs
 `python -m build` + `twine check` on push/PR. Test suite still missing.
-Possible Solution: Add a pytest suite covering MemoryStore and tool handlers,
-and run it in CI on every push/PR.
+Possible Solution: Add a pytest suite covering MemoryStore (incl. graph ops +
+migration/backup) and tool handlers, and run it in CI on every push/PR.
 
 ## Changelog Reference
 
 Daily and version history is tracked under [`docs/changelog/`](docs/changelog/).
 See `docs/changelog/[yyyy]/[mm]/[dd].md` for per-day entries. Latest:
-`docs/changelog/2026/07/29.md`.
+`docs/changelog/2026/08/17.md`.
