@@ -16,21 +16,38 @@ public vocabulary stays "memory"-oriented (no "entity" wording):
 - ``memory_links``   -> directed **connections** between two memories (e.g.
   ``relation="related_to"``, ``"works_at"``, ``"caused_by"``), with a weight.
 
+Search (since v0.5.0)
+---------------------
+Search works like a small search engine:
+
+- A full-text index (SQLite **FTS5**) over content/tags/category/details, kept
+  in sync by triggers, ranked with **BM25**. Multi-word / long queries match
+  memories that contain *any* (or *all*) of the terms — no exact-substring
+  requirement — with prefix + Porter stemming.
+- **Spreading activation** over the knowledge graph: memories connected to the
+  text hits are pulled in with a decayed score, so "anything related" surfaces
+  even when it does not literally contain the query words.
+- If a SQLite build lacks FTS5, search transparently falls back to a tokenised
+  ``LIKE`` scorer (term-coverage ranking).
+
 Graph algorithms (multi-hop recall, shortest path/connection, centrality) are
 implemented with plain SQL + a little Python — no external dependencies.
 
 Backward compatibility
 -----------------------
 The ``memories`` table keeps its original columns, so existing databases are
-preserved. When an older (pre-graph) database is opened, it is **backed up
-automatically** to ``<data_dir>/backups/`` before the new graph tables are
-added — nothing is dropped or rewritten.
+preserved. When an older database is opened that lacks the newest schema (the
+graph tables or the FTS index), it is **backed up automatically** to
+``<data_dir>/backups/`` before the new objects are added — nothing is dropped
+or rewritten.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sqlite3
 import uuid
 from collections import defaultdict, deque
@@ -40,12 +57,29 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # --------------------------------------------------------------------------- #
-# Paths
+# Paths / constants
 # --------------------------------------------------------------------------- #
 
 DATA_DIR_ENV = "BRAINMEMORY_HOME"
 
 DEFAULT_RELATION = "related_to"
+
+# Ranking weights for the search scorer.
+_W_TEXT = 1.0
+_W_IMPORTANCE = 0.25
+_W_RECENCY = 0.10
+_GRAPH_DECAY = 0.5  # score multiplier per hop when spreading through the graph.
+
+# Tiny stop-word list (EN + ID). Only removed when non-stopword tokens remain,
+# so a query like "the it" still searches something.
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+    "is", "are", "be", "at", "by", "as", "it", "this", "that", "from",
+    "yang", "dan", "di", "ke", "dari", "untuk", "pada", "dengan", "itu",
+    "ini", "adalah", "atau", "the",
+}
+
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def default_data_dir() -> Path:
@@ -62,6 +96,22 @@ def default_data_dir() -> Path:
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_ts(value: str) -> float:
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _tokenize(query: str | None) -> list[str]:
+    """Split a query into search tokens (lower-cased, stop-words trimmed)."""
+    if not query:
+        return []
+    raw = [t for t in _TOKEN_RE.findall(query.lower()) if len(t) >= 2]
+    meaningful = [t for t in raw if t not in _STOPWORDS]
+    return meaningful or raw
 
 
 # --------------------------------------------------------------------------- #
@@ -161,11 +211,24 @@ class MemoryStore:
         self.data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "memory.db"
-        # Populated when a legacy (pre-graph) DB is auto-migrated.
+        # Populated when a legacy DB is auto-migrated.
         self.last_backup_path: Path | None = None
+        self.fts_enabled: bool = self._fts5_available()
         self._init_db()
 
     # -- internal ----------------------------------------------------------- #
+
+    @staticmethod
+    def _fts5_available() -> bool:
+        """Return True if this SQLite build supports FTS5."""
+        probe = sqlite3.connect(":memory:")
+        try:
+            probe.execute("CREATE VIRTUAL TABLE _fts_probe USING fts5(x)")
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            probe.close()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -174,19 +237,27 @@ class MemoryStore:
         conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
-    def _legacy_needs_migration(self) -> bool:
-        """True if the DB has the old ``memories`` table but no graph tables."""
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+        return (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
+
+    def _needs_backup_before_upgrade(self) -> bool:
+        """True if an existing DB is missing the newest schema objects."""
         if not self.db_path.exists():
             return False
         conn = sqlite3.connect(self.db_path)
         try:
-            has_memories = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
-            ).fetchone()
-            has_links = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_links'"
-            ).fetchone()
-            return bool(has_memories) and not bool(has_links)
+            if not self._table_exists(conn, "memories"):
+                return False  # fresh / unrelated DB
+            needs_graph = not self._table_exists(conn, "memory_links")
+            needs_fts = self.fts_enabled and not self._table_exists(conn, "memories_fts")
+            return needs_graph or needs_fts
         finally:
             conn.close()
 
@@ -211,9 +282,9 @@ class MemoryStore:
         return dest
 
     def _init_db(self) -> None:
-        # Back up an older (pre-graph) database before adding graph tables so a
-        # user upgrading in place never risks silent data loss.
-        if self._legacy_needs_migration():
+        # Back up before adding any newer schema objects to an existing,
+        # populated database so an in-place upgrade never risks data loss.
+        if self._needs_backup_before_upgrade():
             self.last_backup_path = self._backup_db()
 
         with self._connect() as conn:
@@ -271,7 +342,87 @@ class MemoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_links_target ON memory_links(target_id);"
             )
+            if self.fts_enabled:
+                self._ensure_fts(conn)
             conn.commit()
+
+    def _ensure_fts(self, conn: sqlite3.Connection) -> None:
+        """Create the FTS5 index + sync triggers and backfill if empty."""
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                memory_id UNINDEXED,
+                content,
+                tags,
+                category,
+                details,
+                tokenize = 'porter unicode61'
+            );
+            """
+        )
+        # Keep the FTS index in sync with the base tables via triggers.
+        conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ai
+            AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(memory_id, content, tags, category, details)
+                VALUES (
+                    new.id, new.content, new.tags, new.category,
+                    COALESCE((SELECT group_concat(content, ' ')
+                              FROM memory_details WHERE memory_id = new.id), '')
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ad
+            AFTER DELETE ON memories BEGIN
+                DELETE FROM memories_fts WHERE memory_id = old.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memories_fts_au
+            AFTER UPDATE ON memories BEGIN
+                UPDATE memories_fts
+                   SET content = new.content, tags = new.tags, category = new.category
+                 WHERE memory_id = new.id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memory_details_fts_ai
+            AFTER INSERT ON memory_details BEGIN
+                UPDATE memories_fts SET details = COALESCE(
+                    (SELECT group_concat(content, ' ')
+                       FROM memory_details WHERE memory_id = new.memory_id), '')
+                 WHERE memory_id = new.memory_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memory_details_fts_ad
+            AFTER DELETE ON memory_details BEGIN
+                UPDATE memories_fts SET details = COALESCE(
+                    (SELECT group_concat(content, ' ')
+                       FROM memory_details WHERE memory_id = old.memory_id), '')
+                 WHERE memory_id = old.memory_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memory_details_fts_au
+            AFTER UPDATE ON memory_details BEGIN
+                UPDATE memories_fts SET details = COALESCE(
+                    (SELECT group_concat(content, ' ')
+                       FROM memory_details WHERE memory_id = new.memory_id), '')
+                 WHERE memory_id = new.memory_id;
+            END;
+            """
+        )
+        # Backfill existing memories into a freshly-created (empty) index.
+        fts_count = conn.execute("SELECT count(*) AS c FROM memories_fts").fetchone()["c"]
+        mem_count = conn.execute("SELECT count(*) AS c FROM memories").fetchone()["c"]
+        if fts_count == 0 and mem_count > 0:
+            conn.execute(
+                """
+                INSERT INTO memories_fts(memory_id, content, tags, category, details)
+                SELECT m.id, m.content, m.tags, m.category,
+                       COALESCE((SELECT group_concat(d.content, ' ')
+                                 FROM memory_details d WHERE d.memory_id = m.id), '')
+                FROM memories m;
+                """
+            )
 
     # -- memories (nodes) --------------------------------------------------- #
 
@@ -325,6 +476,247 @@ class MemoryStore:
             ).fetchone()
         return _row_to_memory(row) if row else None
 
+    def _passes_filters(
+        self,
+        mem: Memory,
+        category: str | None,
+        wanted_tags: list[str],
+        min_importance: int | None,
+    ) -> bool:
+        if category and mem.category != category.strip():
+            return False
+        if min_importance is not None and mem.importance < max(1, min(5, int(min_importance))):
+            return False
+        if wanted_tags and not all(t in mem.tags for t in wanted_tags):
+            return False
+        return True
+
+    def search_scored(
+        self,
+        query: str | None = None,
+        *,
+        category: str | None = None,
+        tags: Iterable[str] | None = None,
+        min_importance: int | None = None,
+        limit: int = 20,
+        expand: bool = True,
+        mode: str = "any",
+        expand_depth: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Search-engine style search returning memories with relevance scores.
+
+        Ranking = BM25 text relevance (or term coverage without FTS5) blended
+        with importance and recency, then augmented via graph spreading
+        activation so connected memories surface too.
+
+        Each result dict is a memory plus ``relevance`` (0..1), ``match_type``
+        (``"text"``, ``"related"`` or ``"list"``), ``matched_terms`` and
+        ``distance`` (hops from a text hit; 0 for direct hits).
+        """
+        tokens = _tokenize(query)
+        wanted_tags = [t.strip() for t in (tags or []) if t and t.strip()]
+        limit = max(1, int(limit))
+        expand_depth = max(0, int(expand_depth))
+        mode = "all" if str(mode).lower() == "all" else "any"
+
+        with self._connect() as conn:
+            # ---- no query: fall back to importance/recency listing --------- #
+            if not tokens:
+                rows = conn.execute(
+                    "SELECT * FROM memories ORDER BY importance DESC, updated_at DESC"
+                ).fetchall()
+                out: list[dict[str, Any]] = []
+                for r in rows:
+                    mem = _row_to_memory(r)
+                    if self._passes_filters(mem, category, wanted_tags, min_importance):
+                        entry = mem.to_dict()
+                        entry.update(relevance=None, match_type="list",
+                                     matched_terms=[], distance=0)
+                        out.append(entry)
+                    if len(out) >= limit:
+                        break
+                return out
+
+            # ---- seed candidates via FTS5 (or LIKE fallback) --------------- #
+            seeds = self._fts_seeds(conn, tokens, mode)
+            if seeds is None:
+                seeds = self._like_seeds(conn, tokens)
+
+            # Normalise raw text relevance to 0..1.
+            if seeds:
+                raw_vals = [rv for _, rv in seeds]
+                lo, hi = min(raw_vals), max(raw_vals)
+                span = (hi - lo) or 1.0
+            else:
+                lo, span = 0.0, 1.0
+
+            # Recency normalisation across seed set.
+            seed_ids = [mid for mid, _ in seeds]
+            mem_by_id: dict[str, Memory] = {}
+            ts_vals: list[float] = []
+            for mid in seed_ids:
+                m = self._get_conn(conn, mid)
+                if m is not None:
+                    mem_by_id[mid] = m
+                    ts_vals.append(_parse_ts(m.updated_at))
+            ts_lo = min(ts_vals) if ts_vals else 0.0
+            ts_span = ((max(ts_vals) - ts_lo) if ts_vals else 0.0) or 1.0
+
+            scored: dict[str, dict[str, Any]] = {}
+            for mid, raw in seeds:
+                mem = mem_by_id.get(mid)
+                if mem is None:
+                    continue
+                if not self._passes_filters(mem, category, wanted_tags, min_importance):
+                    continue
+                rel = (raw - lo) / span
+                rec = (_parse_ts(mem.updated_at) - ts_lo) / ts_span
+                final = (
+                    _W_TEXT * rel
+                    + _W_IMPORTANCE * (mem.importance / 5.0)
+                    + _W_RECENCY * rec
+                )
+                scored[mid] = {
+                    "memory": mem,
+                    "score": final,
+                    "match_type": "text",
+                    "matched_terms": self._matched_terms(conn, mid, tokens),
+                    "distance": 0,
+                }
+
+            # ---- spreading activation across the graph --------------------- #
+            if expand and expand_depth > 0 and scored:
+                self._spread(conn, scored, expand_depth, category, wanted_tags, min_importance)
+
+            ranked = sorted(scored.values(), key=lambda e: e["score"], reverse=True)[:limit]
+            results: list[dict[str, Any]] = []
+            for e in ranked:
+                entry = e["memory"].to_dict()
+                entry.update(
+                    relevance=round(e["score"], 4),
+                    match_type=e["match_type"],
+                    matched_terms=e["matched_terms"],
+                    distance=e["distance"],
+                )
+                results.append(entry)
+            return results
+
+    def _spread(
+        self,
+        conn: sqlite3.Connection,
+        scored: dict[str, dict[str, Any]],
+        depth: int,
+        category: str | None,
+        wanted_tags: list[str],
+        min_importance: int | None,
+    ) -> None:
+        """Pull graph-connected memories into ``scored`` with a decayed score."""
+        adjacency: dict[str, list[MemoryLink]] = defaultdict(list)
+        for link in self._all_links(conn):
+            adjacency[link.source_id].append(link)
+            adjacency[link.target_id].append(link)
+
+        # BFS outward from every text hit.
+        frontier: deque[tuple[str, int, float]] = deque(
+            (mid, 0, entry["score"]) for mid, entry in list(scored.items())
+        )
+        seen_distance: dict[str, int] = {mid: 0 for mid in scored}
+        while frontier:
+            current, dist, base = frontier.popleft()
+            if dist >= depth:
+                continue
+            for link in adjacency.get(current, []):
+                other = link.target_id if link.source_id == current else link.source_id
+                nxt_dist = dist + 1
+                if other in seen_distance and seen_distance[other] <= nxt_dist:
+                    continue
+                seen_distance[other] = nxt_dist
+                mem = self._get_conn(conn, other)
+                if mem is None:
+                    continue
+                if not self._passes_filters(mem, category, wanted_tags, min_importance):
+                    continue
+                spread_score = base * (_GRAPH_DECAY ** nxt_dist)
+                existing = scored.get(other)
+                if existing is None:
+                    scored[other] = {
+                        "memory": mem,
+                        "score": spread_score,
+                        "match_type": "related",
+                        "matched_terms": [],
+                        "distance": nxt_dist,
+                    }
+                elif existing["match_type"] == "related" and spread_score > existing["score"]:
+                    existing["score"] = spread_score
+                    existing["distance"] = nxt_dist
+                frontier.append((other, nxt_dist, base))
+
+    def _fts_seeds(
+        self, conn: sqlite3.Connection, tokens: list[str], mode: str
+    ) -> list[tuple[str, float]] | None:
+        """FTS5 seeds as ``(memory_id, relevance)`` (higher = better), or None.
+
+        Returns ``None`` to signal the caller to use the LIKE fallback.
+        """
+        if not self.fts_enabled:
+            return None
+        joiner = " AND " if mode == "all" else " OR "
+        # Column weights: tags/category matter a bit more than long content.
+        bm25_weights = "1.0, 2.0, 1.5, 1.0"
+        for builder in (
+            lambda t: f'"{t}"*',  # prefix + phrase-quoted (safe, stemmed prefix)
+            lambda t: f'"{t}"',   # exact quoted token (fallback if prefix errors)
+        ):
+            match = joiner.join(builder(t) for t in tokens)
+            try:
+                rows = conn.execute(
+                    f"SELECT memory_id, bm25(memories_fts, {bm25_weights}) AS s "
+                    "FROM memories_fts WHERE memories_fts MATCH ? ORDER BY s",
+                    (match,),
+                ).fetchall()
+                # bm25 is more-negative = more-relevant; flip so higher = better.
+                return [(r["memory_id"], -float(r["s"])) for r in rows]
+            except sqlite3.OperationalError:
+                continue
+        return None
+
+    def _like_seeds(
+        self, conn: sqlite3.Connection, tokens: list[str]
+    ) -> list[tuple[str, float]]:
+        """Fallback scorer: rank by how many query terms a memory covers."""
+        rows = conn.execute("SELECT * FROM memories").fetchall()
+        seeds: list[tuple[str, float]] = []
+        for r in rows:
+            det = conn.execute(
+                "SELECT COALESCE(group_concat(content, ' '), '') AS d "
+                "FROM memory_details WHERE memory_id = ?",
+                (r["id"],),
+            ).fetchone()["d"]
+            haystack = f"{r['content']} {r['tags']} {r['category']} {det}".lower()
+            covered = sum(1 for t in tokens if t in haystack)
+            if covered:
+                # log-scale so covering more terms matters but not linearly.
+                seeds.append((r["id"], math.log1p(covered)))
+        seeds.sort(key=lambda x: x[1], reverse=True)
+        return seeds
+
+    def _matched_terms(
+        self, conn: sqlite3.Connection, memory_id: str, tokens: list[str]
+    ) -> list[str]:
+        row = conn.execute(
+            "SELECT content, tags, category FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            return []
+        det = conn.execute(
+            "SELECT COALESCE(group_concat(content, ' '), '') AS d "
+            "FROM memory_details WHERE memory_id = ?",
+            (memory_id,),
+        ).fetchone()["d"]
+        haystack = f"{row['content']} {row['tags']} {row['category']} {det}".lower()
+        return [t for t in tokens if t in haystack]
+
     def search(
         self,
         query: str | None = None,
@@ -333,46 +725,36 @@ class MemoryStore:
         tags: Iterable[str] | None = None,
         min_importance: int | None = None,
         limit: int = 20,
+        expand: bool = True,
+        mode: str = "any",
     ) -> list[Memory]:
-        """Search memories by free text, category, tags and/or importance.
+        """Search memories, ranked by relevance. Returns plain :class:`Memory`.
 
-        Free text is matched against a memory's own content/tags/category **and**
-        against the content of any details attached to it.
+        This is the backward-compatible wrapper over :meth:`search_scored`.
         """
-        clauses: list[str] = []
-        params: list[Any] = []
-
-        if query and query.strip():
-            like = f"%{query.strip()}%"
-            clauses.append(
-                "(content LIKE ? OR tags LIKE ? OR category LIKE ? OR id IN "
-                "(SELECT memory_id FROM memory_details WHERE content LIKE ?))"
-            )
-            params.extend([like, like, like, like])
-
-        if category and category.strip():
-            clauses.append("category = ?")
-            params.append(category.strip())
-
-        if min_importance is not None:
-            clauses.append("importance >= ?")
-            params.append(max(1, min(5, int(min_importance))))
-
-        wanted_tags = [t.strip() for t in (tags or []) if t and t.strip()]
-        for tag in wanted_tags:
-            clauses.append("tags LIKE ?")
-            params.append(f'%"{tag}"%')
-
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = (
-            f"SELECT * FROM memories {where} "
-            "ORDER BY importance DESC, updated_at DESC LIMIT ?"
+        scored = self.search_scored(
+            query,
+            category=category,
+            tags=tags,
+            min_importance=min_importance,
+            limit=limit,
+            expand=expand,
+            mode=mode,
         )
-        params.append(max(1, int(limit)))
-
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_memory(r) for r in rows]
+        out: list[Memory] = []
+        for e in scored:
+            out.append(
+                Memory(
+                    id=e["id"],
+                    content=e["content"],
+                    category=e["category"],
+                    tags=e["tags"],
+                    importance=e["importance"],
+                    created_at=e["created_at"],
+                    updated_at=e["updated_at"],
+                )
+            )
+        return out
 
     def list_all(self, *, limit: int = 100, offset: int = 0) -> list[Memory]:
         """Return memories ordered by importance then recency."""
@@ -762,9 +1144,6 @@ class MemoryStore:
                 related = self.recall_related(memory_id, depth=depth, limit=limit)
                 if related is None:
                     return {"nodes": [], "links": []}
-                node_ids = [related["root"]["id"]] + [
-                    m["id"] for m in related["related"]
-                ]
                 nodes = [related["root"]] + related["related"]
                 links = related["links"]
                 return {
@@ -871,6 +1250,7 @@ class MemoryStore:
             "relation_types": relation_types,
             "most_connected": most_connected,
             "average_importance": avg_importance,
+            "search_engine": "fts5-bm25" if self.fts_enabled else "like-fallback",
             "data_dir": str(self.data_dir),
             "db_path": str(self.db_path),
             "last_backup": str(self.last_backup_path) if self.last_backup_path else None,

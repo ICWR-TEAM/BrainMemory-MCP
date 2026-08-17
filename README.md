@@ -35,7 +35,7 @@ Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 |------|-------------|
 | `store_memory` | Persist a new memory (content, category, tags, importance). |
 | `recall_memory` | Fetch a memory by id, with its details and connections. |
-| `search_memory` | Find memories by free text, category, tags and/or importance (also searches details). |
+| `search_memory` | Search-engine style: rank memories by relevance (BM25) for multi-word/long queries; also searches details; optional graph `expand`. |
 | `list_memories` | List stored memories (most important & recent first). |
 | `update_memory` | Modify an existing memory (only supplied fields change). |
 | `forget_memory` | Delete a memory (its details and connections cascade away). |
@@ -54,6 +54,28 @@ Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 
 Two read-only resources are exposed as JSON: `brainmemory://stats` (the summary)
 and `brainmemory://graph` (the nodes + links map).
+
+## Search (like a search engine)
+
+`search_memory` no longer needs a single keyword. It tokenises your query and
+ranks memories by relevance, so full sentences work:
+
+- **Full-text + BM25** — a SQLite **FTS5** index over content/tags/category/
+  details (kept in sync by triggers), ranked with BM25. Multi-word / long
+  queries match memories containing *any* (or, with `mode="all"`, *every*) term,
+  with prefix + Porter stemming (`sync` matches `syncing`).
+- **Graph spreading activation** — with `expand=True` (default), memories
+  connected in the knowledge graph to a text hit are pulled in with a decayed
+  score, so related context surfaces even without the query words.
+- **Ranking** blends text relevance with importance and recency. Each result
+  carries `relevance` (0..1), `match_type` (`text` | `related` | `list`),
+  `matched_terms`, and `distance` (hops from a text hit).
+- **Fallback** — where a SQLite build lacks FTS5, search degrades to a tokenised
+  `LIKE` term-coverage scorer, so it always works. `summarize_memories` reports
+  the active engine (`fts5-bm25` or `like-fallback`).
+
+Example: `search_memory("Burp Firefox proxy sync")` returns the relevant
+memories ranked, plus anything linked to them — in a single call.
 
 ## Install
 
@@ -168,14 +190,17 @@ tables:
 - `memory_links` — directed connections `source_id -> target_id` with a
   `relation` and `weight` (cascade-deleted with either endpoint).
 
-Graph operations (multi-hop `recall_related`, shortest-path `connect_memories`,
-degree centrality in `summarize_memories`) are computed with plain SQL + a
-little Python — no external services or vector database required.
+Search uses a SQLite **FTS5** full-text index (`memories_fts`, kept in sync by
+triggers) ranked with BM25, augmented by graph spreading activation. Graph
+operations (multi-hop `recall_related`, shortest-path `connect_memories`, degree
+centrality in `summarize_memories`) are computed with plain SQL + a little
+Python — no external services or vector database required.
 
 Nothing is ever silently deleted — removal only happens through
 `forget_memory`, `unlink_memories`, or detail deletion. When an older
-(pre-graph) database is opened, it is **backed up automatically** to
-`~/.brainmemory-mcp/backups/` before the graph tables are added.
+database is opened that lacks the newest schema (the graph tables or the FTS
+index), it is **backed up automatically** to `~/.brainmemory-mcp/backups/`
+before the new objects are added.
 
 ## License
 

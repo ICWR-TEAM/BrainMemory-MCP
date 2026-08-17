@@ -10,6 +10,11 @@ nodes, connections between them are directed links, and extra facts attach as
 details — enabling precise, multi-hop recall while keeping a "memory"-oriented
 tool vocabulary.
 
+Since v0.5.0 search works like a small **search engine**: a SQLite FTS5 index
+ranks results with BM25 (multi-word / long queries welcome), and graph
+**spreading activation** pulls in connected memories so related context
+surfaces. Falls back to a tokenised LIKE scorer where FTS5 is unavailable.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -17,7 +22,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .memory import (
     Memory,

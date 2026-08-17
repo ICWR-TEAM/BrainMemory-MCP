@@ -125,31 +125,46 @@ def create_server(
         tags: list[str] | None = None,
         min_importance: int | None = None,
         limit: int = 20,
+        expand: bool = True,
+        mode: str = "any",
     ) -> dict[str, Any]:
-        """Search memories by free text, category, tags and/or importance.
+        """Search memories like a search engine (ranked by relevance).
+
+        Multi-word / long queries work: results are ranked by full-text
+        relevance (BM25) blended with importance and recency — you do NOT need
+        to reduce a question to a single keyword. Matching also covers any
+        details attached to a memory. When ``expand`` is on, memories connected
+        in the knowledge graph to a text hit are pulled in too, so related
+        context surfaces even if it does not contain the query words.
 
         Args:
-            query: Free-text matched against content, tags, category and any
-                details attached to a memory.
+            query: Natural-language query or keywords (a full sentence is fine).
             category: Restrict to a single category.
             tags: Only memories containing ALL of these tags.
             min_importance: Only memories with importance >= this value (1..5).
             limit: Maximum number of results (default 20).
+            expand: Also include graph-connected memories via spreading
+                activation (default True).
+            mode: "any" (match any term, default) or "all" (require every term).
 
         Returns:
-            A list of matching memories, most important & most recent first.
+            Ranked memories; each includes ``relevance`` (0..1), ``match_type``
+            ("text" | "related" | "list"), ``matched_terms`` and ``distance``
+            (hops from a text hit; 0 for direct hits).
         """
-        results = store.search(
+        results = store.search_scored(
             query=query or None,
             category=category,
             tags=tags or None,
             min_importance=min_importance,
             limit=limit,
+            expand=expand,
+            mode=mode,
         )
         return {
             "status": "ok",
             "count": len(results),
-            "memories": [m.to_dict() for m in results],
+            "memories": results,
         }
 
     @mcp.tool()

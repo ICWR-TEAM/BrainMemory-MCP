@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-17
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.4.0)
-Project Status: Active — installable Python MCP server with stdio (default) + SSE (--web) transports; memory modelled as a SQLite knowledge graph
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.5.0)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search
 
 ---
 
@@ -36,6 +36,12 @@ Scope (initial intent):
 > graph** (memories = nodes, connections = directed links, details = attached
 > facts) for precise multi-hop recall. Still SQLite/stdlib only. Tool vocabulary
 > intentionally stays "memory"-oriented (no "entity" wording). Released v0.4.0.
+>
+> Status update (2026-08-17): Search upgraded to a search-engine model — a
+> SQLite **FTS5** index ranked with **BM25** (multi-word / long queries, prefix
+> + Porter stemming) plus **graph spreading activation** so connected memories
+> surface too. Falls back to a tokenised LIKE scorer without FTS5. Released
+> v0.5.0.
 
 ## Mandatory Workflow
 
@@ -82,15 +88,23 @@ Describe:
   - `memory_links` — directed connection `source_id -> target_id` with
     `relation` (default `related_to`) + `weight`; `UNIQUE(source,target,relation)`,
     both endpoints `ON DELETE CASCADE`.
-  Opening a pre-graph DB auto-backs it up to
-  `~/.brainmemory-mcp/backups/memory-<UTC>.db` (SQLite online backup API) before
-  the graph tables are added — non-destructive migration.
+  - `memories_fts` — SQLite **FTS5** full-text index over
+    content/tags/category/details, kept in sync by triggers, ranked with BM25
+    (`tokenize='porter unicode61'`). Present only when the SQLite build has
+    FTS5; otherwise search falls back to a tokenised LIKE scorer.
+  Opening a DB that lacks the newest schema (graph tables or the FTS index)
+  auto-backs it up to `~/.brainmemory-mcp/backups/memory-<UTC>.db` (SQLite
+  online backup API) before the new objects are added — non-destructive
+  migration.
 - **API structure (Cognitive tools):**
   - Core memory:
     - `store_memory(content, category, tags, importance)`
     - `recall_memory(memory_id)` — returns the memory + its details + connections
-    - `search_memory(query, category, tags, min_importance, limit)` — also
-      searches attached details
+    - `search_memory(query, category, tags, min_importance, limit, expand, mode)`
+      — search-engine ranking (FTS5/BM25, multi-word queries) over
+      content/tags/category/details, blended with importance + recency, and
+      graph-augmented via spreading activation (`expand`). Results carry
+      `relevance`, `match_type`, `matched_terms`, `distance`.
     - `list_memories(limit, offset)`
     - `update_memory(memory_id, content?, category?, tags?, importance?)`
     - `forget_memory(memory_id)` — cascades to details + links
@@ -241,17 +255,36 @@ original tools keep their names (richer output). Graph algorithms use plain
 SQL + Python BFS (small data), so still zero external deps. Verified locally:
 131 existing memories preserved, backup written.
 
+Date: 2026-08-17
+Decision: Upgrade search to an FTS5/BM25 + graph-spreading-activation engine;
+release v0.5.0.
+Reason: The old `LIKE '%query%'` matched the whole phrase as one substring, so
+multi-word / long queries (e.g. "Burp Firefox sync") returned nothing and agents
+had to degrade to single keywords. A real search needs tokenisation + relevance
+ranking, and the knowledge graph should let related memories surface too.
+Impact: Added a synced SQLite FTS5 index (`memories_fts`) + triggers; `search()`
+now tokenises the query, ranks with BM25 (blended with importance + recency),
+and — when `expand=True` — spreads through `memory_links` to include connected
+memories with a decayed score. New `search_scored()` returns rich results
+(`relevance`, `match_type`, `matched_terms`, `distance`); `search_memory` gained
+`expand` + `mode` params. Transparent fallback to a tokenised-LIKE scorer where
+FTS5 is absent. Opening a pre-FTS DB auto-backs up then backfills the index.
+Still zero external deps (FTS5 is stdlib sqlite3). Verified: 131 memories
+backfilled, backup written, multi-word EN/ID queries rank correctly, and a
+graph-only memory surfaces solely via `expand`.
+
 ## Current State
 
-MVP + graph model implemented and verified locally:
+MVP + graph model + search engine implemented and verified locally:
 - `pip install .` builds and installs the package + console script.
 - Server starts over stdio (default) and SSE (`--web`); `create_server()`
   registers 13 tools + 2 resources.
-- MemoryStore CRUD + search + graph ops (link/detail/recall_related/
-  connect_memories/memory_map) + stats verified via smoke test.
-- Migration verified against the real DB: 131 memories preserved, backup
-  written to `~/.brainmemory-mcp/backups/memory-20260817T141028Z.db`, new graph
-  tables created.
+- MemoryStore CRUD + FTS5/BM25 search (`search_scored`) with graph spreading
+  activation + graph ops (link/detail/recall_related/connect_memories/
+  memory_map) + stats verified via smoke test.
+- Migration verified against the real DB: 131 memories preserved across two
+  upgrades (graph tables, then FTS index backfilled = 131 rows), each with an
+  auto-backup under `~/.brainmemory-mcp/backups/`.
 - Memory persists to `~/.brainmemory-mcp` (SQLite), overridable via `--data-dir`.
 
 ## Pending Issue
@@ -288,10 +321,16 @@ Priority: High
 Status: Resolved — pinned `mcp>=1.2.0,<2` and released v0.3.1 to PyPI.
 Possible Solution: Longer term, migrate to the `mcp` 2.0 API and lift the cap.
 
+Issue: Long / multi-word search queries returned nothing (whole-phrase LIKE).
+Priority: High
+Status: Resolved (v0.5.0) — FTS5/BM25 tokenised search + graph spreading
+activation; multi-word EN/ID queries now rank relevant results in one call.
+
 Issue: Semantic recall (embeddings) not implemented.
 Priority: Low
-Status: Open (partially mitigated) — the knowledge graph now gives precise
-relational/multi-hop recall, but there is still no vector/semantic similarity.
+Status: Open (partially mitigated) — the knowledge graph gives precise
+relational/multi-hop recall and FTS5/BM25 gives lexical relevance ranking, but
+there is still no vector/semantic similarity (synonyms/paraphrase).
 Possible Solution: Add an embedding provider + vector index alongside SQLite,
 or a `similar_to` link type populated from embeddings.
 
