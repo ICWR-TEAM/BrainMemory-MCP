@@ -4,7 +4,7 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-17
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.5.0)
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.7.0)
 Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search
 
 ---

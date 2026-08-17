@@ -22,7 +22,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 
 from .memory import (
     Memory,
