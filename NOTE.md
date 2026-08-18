@@ -48,8 +48,9 @@ Scope (initial intent):
 > token overhead: `store_memories`, `recall_memories`, `update_memories`,
 > `forget_memories`, `add_details`, `link_memories_bulk`,
 > `unlink_memories_bulk`. Each accepts a list of per-item dicts and reports a
-> per-item `status` so one bad item never aborts the whole batch. Released
-> v0.8.0.
+> per-item `status` so one bad item never aborts the whole batch. Committed +
+> pushed to `origin/main`, tagged `v0.8.0`, and published to PyPI (manual
+> `twine upload` with an API token — see "Credentials & Secrets" below).
 
 ## Mandatory Workflow
 
@@ -64,6 +65,12 @@ Scope (initial intent):
 - Do not remove existing features without confirmation.
 - Do not introduce dependency without justification.
 - Do not ignore existing project constraints.
+- Do not commit credentials/tokens (PyPI, GitHub, etc.) into the repository or
+  any file that gets pushed to GitHub. Store them only in local machine
+  config that lives outside the git working tree (e.g. `~/.pypirc` for PyPI —
+  see "Credentials & Secrets"). If a secret is ever pasted into a chat/tool
+  call, still don't write it into a tracked file; use it in-memory (env var
+  for the one command that needs it) and record only *where* it now lives.
 
 ## AI Operating Context
 
@@ -76,6 +83,29 @@ Define AI responsibility, expected behavior, and operational boundaries.
   or changing tools.
 - AI must keep memory/persistence behavior deterministic and safe (no silent
   data loss).
+
+## Credentials & Secrets (local machine only — never in the repo)
+
+Do not put actual secret values in this file, in git history, or in anything
+pushed to GitHub. This section only records **where** each credential lives so
+future sessions know how release/publish will authenticate.
+
+- **PyPI publishing (manual `twine upload` fallback):** an API token
+  (`username = __token__`, scoped to the `brainmemory-mcp` project) is stored
+  in `~/.pypirc` on this machine (`chmod 600`, outside the git working tree —
+  confirmed not tracked by `git ls-files`). `twine upload dist/*` picks it up
+  automatically; no need to pass it on the command line again. Configured
+  2026-08-18. If the token is ever rotated/revoked, generate a new one at
+  <https://pypi.org/manage/account/token/> and overwrite `~/.pypirc`.
+- **PyPI publishing (preferred, no token needed):** CI (`.github/workflows/
+  publish.yml`) uses **Trusted Publishing** (OIDC) on a `v*` tag / GitHub
+  Release — see `docs/RELEASING.md` §1. The manual token above is only a
+  fallback for publishing from a local machine.
+- **GitHub push access:** the `origin` remote URL already embeds a GitHub
+  Personal Access Token (see `git remote -v` on this machine); this predates
+  this session and is not stored in any repo file either — it lives in the
+  local git config (`.git/config`, which is itself git-ignored/not part of
+  tracked content).
 
 ## Technical Development Details
 
@@ -154,7 +184,8 @@ Describe:
 - **Release/PyPI:** `.github/workflows/publish.yml` builds sdist+wheel, runs
   `twine check`, and publishes to PyPI via **Trusted Publishing** (OIDC) on a
   `v*` tag / GitHub Release. Manual `twine upload` with an API token is the
-  fallback. Process documented in `docs/RELEASING.md`.
+  fallback (token lives in `~/.pypirc` on this machine — see "Credentials &
+  Secrets"). Process documented in `docs/RELEASING.md`.
 - **Deployment model:** Standalone HTTP MCP server (containerizable).
 - **Coding convention:** PEP 8 + type hints; `ruff`/`black` configured
   (line-length 100).
@@ -331,9 +362,38 @@ via a stdio-free smoke test: all 7 bulk tools called directly against
 same batch (e.g. self-link rejected, missing id reported, empty content
 rejected) without aborting the batch.
 
+Date: 2026-08-18
+Decision: Publish v0.8.0 to PyPI via manual `twine upload` (API token), and
+store that token only in `~/.pypirc` on the local machine — never in the git
+repository.
+Reason: User supplied a PyPI API token in chat and asked to "commit & push,
+then bump and upload to PyPI", plus "remember the PyPI token, make a memory
+about the credential". Trusted Publishing (the preferred, tokenless CI path)
+requires the release to go through the `publish.yml` workflow off a pushed tag
+/ GitHub Release; a manual local upload was the fastest path for this request,
+so the token had to be used locally. Committing a secret to any tracked file
+(NOTE.md, changelog, `.pypirc` inside the repo, etc.) would leak it to GitHub
+history permanently, so it was written only to the user's `~/.pypirc`
+(standard twine credentials file, outside the git working tree) instead.
+Impact: `git push origin main --tags` published commit `4cf1371` and tag
+`v0.8.0` to `origin/main` (ICWR-TEAM/BrainMemory-MCP) first. Then
+`python3 -m build` (needed `PIP_USER=0` to avoid a `--user`-install isolation
+conflict in this environment) + `twine check dist/*` (both PASSED) +
+`twine upload dist/*` (using the supplied token via env vars for that one
+command, not written to any repo file) published `brainmemory-mcp==0.8.0` to
+PyPI — confirmed live via the PyPI JSON API
+(`https://pypi.org/pypi/brainmemory-mcp/json` → `info.version == "0.8.0"`).
+`~/.pypirc` was then created (`chmod 600`) so future manual releases from this
+machine don't need the token re-pasted; confirmed not tracked by
+`git ls-files`. Local `dist/`, `build/`, `*.egg-info` build artifacts were
+removed after upload (already git-ignored anyway). No secret value appears in
+this file, the changelog, or any git-tracked file — see "Credentials &
+Secrets" above for where it actually lives.
+
 ## Current State
 
-MVP + graph model + search engine + bulk tools implemented and verified locally:
+MVP + graph model + search engine + bulk tools implemented, published, and
+verified:
 - `pip install .` builds and installs the package + console script.
 - Server starts over stdio (default) and SSE (`--web`); `create_server()`
   registers 20 tools (13 singular/query + 7 bulk) + 2 resources.
@@ -349,6 +409,10 @@ MVP + graph model + search engine + bulk tools implemented and verified locally:
   upgrades (graph tables, then FTS index backfilled = 131 rows), each with an
   auto-backup under `~/.brainmemory-mcp/backups/`.
 - Memory persists to `~/.brainmemory-mcp` (SQLite), overridable via `--data-dir`.
+- **v0.8.0 published**: commit `4cf1371` + tag `v0.8.0` pushed to
+  `origin/main`; `brainmemory-mcp==0.8.0` live on PyPI (verified via the PyPI
+  JSON API). PyPI API token for future manual releases stored in `~/.pypirc`
+  on this machine (not in the repo — see "Credentials & Secrets").
 
 ## Pending Issue
 
@@ -419,6 +483,16 @@ Possible Solution (future): Consider `brief`/`fields` projection params on
 `search_memory`/`list_memories`/`recall_memories` to also shrink per-item
 *output* size (separate from batching), if still needed after using the bulk
 tools.
+
+Issue: PyPI publishing from a local machine depended on a token being
+re-supplied every time (no persisted credential before 2026-08-18).
+Priority: Low
+Status: Resolved — API token saved to `~/.pypirc` (outside the repo,
+`chmod 600`) on 2026-08-18; `twine upload dist/*` now picks it up
+automatically. Trusted Publishing via CI remains the preferred, tokenless
+path for tagged releases (see `docs/RELEASING.md` §1).
+Possible Solution (future): If this moves to a shared/CI machine, prefer
+wiring up Trusted Publishing exclusively and retire the local token.
 
 Issue: No automated tests / CI yet.
 Priority: Medium
