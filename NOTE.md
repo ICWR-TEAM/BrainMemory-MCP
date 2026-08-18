@@ -3,9 +3,9 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-08-17
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.7.0)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search
+Last Update Project: 2026-08-18
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.8.0)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search, with bulk tool variants for every single-item write/read operation
 
 ---
 
@@ -42,6 +42,14 @@ Scope (initial intent):
 > + Porter stemming) plus **graph spreading activation** so connected memories
 > surface too. Falls back to a tokenised LIKE scorer without FTS5. Released
 > v0.5.0.
+>
+> Status update (2026-08-18): Added **bulk tool variants** for every tool that
+> writes or fetches a single memory/detail/link, to cut agent round-trips and
+> token overhead: `store_memories`, `recall_memories`, `update_memories`,
+> `forget_memories`, `add_details`, `link_memories_bulk`,
+> `unlink_memories_bulk`. Each accepts a list of per-item dicts and reports a
+> per-item `status` so one bad item never aborts the whole batch. Released
+> v0.8.0.
 
 ## Mandatory Workflow
 
@@ -99,7 +107,12 @@ Describe:
 - **API structure (Cognitive tools):**
   - Core memory:
     - `store_memory(content, category, tags, importance)`
+    - `store_memories(items)` — bulk `store_memory`; `items` is a list of
+      `{content, category?, tags?, importance?}`; per-item `status`.
     - `recall_memory(memory_id)` — returns the memory + its details + connections
+    - `recall_memories(memory_ids, include_connections=False)` — bulk
+      `recall_memory`; `include_connections` opts into the richer per-item
+      payload (details + connections), off by default for a leaner response.
     - `search_memory(query, category, tags, min_importance, limit, expand, mode)`
       — search-engine ranking (FTS5/BM25, multi-word queries) over
       content/tags/category/details, blended with importance + recency, and
@@ -107,18 +120,32 @@ Describe:
       `relevance`, `match_type`, `matched_terms`, `distance`.
     - `list_memories(limit, offset)`
     - `update_memory(memory_id, content?, category?, tags?, importance?)`
+    - `update_memories(updates)` — bulk `update_memory`; `updates` is a list of
+      `{memory_id, content?, category?, tags?, importance?}`.
     - `forget_memory(memory_id)` — cascades to details + links
+    - `forget_memories(memory_ids)` — bulk `forget_memory`.
     - `summarize_memories()` — totals, categories, top tags, connection stats,
       most-connected memories
   - Graph memory:
     - `add_detail(memory_id, content)`
+    - `add_details(items)` — bulk `add_detail`; items may target different
+      memories, doubling as a multi-memory enrichment call.
     - `link_memories(from_id, to_id, relation, weight)`
+    - `link_memories_bulk(links)` — bulk `link_memories`; `links` is a list of
+      `{from_id, to_id, relation?, weight?}`.
     - `unlink_memories(from_id, to_id, relation?)`
+    - `unlink_memories_bulk(links)` — bulk `unlink_memories`.
     - `recall_related(memory_id, depth, relation?, limit)` — multi-hop recall
     - `connect_memories(from_id, to_id, max_depth)` — shortest path
     - `memory_map(memory_id?, depth, limit)` — nodes + links map
   - Resources: `brainmemory://stats` (JSON summary), `brainmemory://graph`
     (JSON nodes + links map).
+  - Bulk-tool convention: every bulk tool takes a `list[dict]` of per-item
+    payloads, never raises/aborts on one bad item, and returns
+    `{status: "ok", count, <verb-count>, results: [...]}` where each `results`
+    entry carries its own `status` (the tool's normal per-item status value, or
+    `"error"` with an `error` message for a malformed item). This keeps
+    behaviour predictable for partial-failure batches.
 - **Packaging:** `pyproject.toml` (PEP 621 / setuptools, `src/` layout).
   Version is single-sourced from `brainmemory_mcp.__version__` via
   `[tool.setuptools.dynamic]`. Installable via `pip install brainmemory-mcp`
@@ -143,13 +170,14 @@ README.md                      # usage & install docs
 src/brainmemory_mcp/
     __init__.py                # package exports + version
     __main__.py                # CLI entry point (argparse: --web/--host/--port/--data-dir)
-    server.py                  # FastMCP server, Cognitive + graph tools, run(web=...)
+    server.py                  # FastMCP server, Cognitive + graph + bulk tools, run(web=...)
     memory.py                  # SQLite graph store: Memory/MemoryDetail/MemoryLink + MemoryStore
 .github/workflows/publish.yml   # CI: build + Trusted-Publishing to PyPI
 docs/RELEASING.md              # how to cut a release / publish to PyPI
 docs/changelog/2026/07/21.md
 docs/changelog/2026/07/29.md
 docs/changelog/2026/08/17.md
+docs/changelog/2026/08/18.md
 NOTE.md
 ```
 
@@ -158,15 +186,19 @@ NOTE.md
 Describe:
 - **Input:** MCP tool invocations arriving from an MCP client over stdio
   (default) or HTTP/SSE (`--web`) — cognitive tool calls such as
-  store/recall/search/link/traverse a memory.
+  store/recall/search/link/traverse a memory, single-item or bulk.
 - **Processing:** `FastMCP` routes each tool call to its handler in
-  `server.py`, which delegates to `MemoryStore` (`memory.py`).
+  `server.py`, which delegates to `MemoryStore` (`memory.py`). Bulk handlers
+  loop over their input list, calling the same `MemoryStore` methods as their
+  singular counterparts per item, and collect a per-item result instead of
+  raising on the first failure.
 - **Logic:** Cognitive tools implement memory operations over a knowledge
   graph — persisting new memories (nodes), attaching details, connecting
   memories (directed weighted links), retrieving relevant memories
   (text/category/tag/importance filters), multi-hop recall (`recall_related`),
   shortest-path connection (`connect_memories`), updating, forgetting
-  (cascade), and summarizing (incl. degree centrality).
+  (cascade), and summarizing (incl. degree centrality) — each available singly
+  or in bulk.
 - **Output:** Tool results (JSON dicts) streamed back to the client over SSE.
 - **External integration:** MCP clients (LLM agents/IDEs); local SQLite store.
   (No embedding/LLM provider yet — semantic recall remains future work; the
@@ -273,15 +305,46 @@ Still zero external deps (FTS5 is stdlib sqlite3). Verified: 131 memories
 backfilled, backup written, multi-word EN/ID queries rank correctly, and a
 graph-only memory surfaces solely via `expand`.
 
+Date: 2026-08-18
+Decision: Add bulk tool variants for every tool that writes or fetches a single
+memory/detail/link; release v0.8.0.
+Reason: Discussed token-efficiency options for agents using this server — one
+of the clearest wins was letting an agent do many single-item writes/reads in
+one MCP round-trip instead of N, which cuts both tool-call overhead and
+repeated response boilerplate. User asked to implement bulk operations across
+every applicable tool first (before other token-saving ideas like brief/field
+projection or `graphify`).
+Impact: 7 new tools added — `store_memories`, `recall_memories`,
+`update_memories`, `forget_memories`, `add_details`, `link_memories_bulk`,
+`unlink_memories_bulk` — each accepting a `list[dict]` of per-item payloads and
+delegating to the same `MemoryStore` methods as the existing singular tools (no
+`MemoryStore`/schema changes). Each bulk tool never aborts on one bad item:
+every item gets its own `status` ("ok"-family value, `"not_found"`, or
+`"error"` with a message), plus an overall count, so partial failures are
+visible without losing the rest of the batch. `search_memory`,
+`list_memories`, `recall_related`, `connect_memories`, and `memory_map` were
+left singular — they are already "many results from one call" or operate on a
+specific relationship/path, so a bulk wrapper would not add value.
+`create_server()` now registers 20 tools + 2 resources (was 13 + 2). Verified
+via a stdio-free smoke test: all 7 bulk tools called directly against
+`FastMCP.call_tool`, including mixed success/`not_found`/`error` items in the
+same batch (e.g. self-link rejected, missing id reported, empty content
+rejected) without aborting the batch.
+
 ## Current State
 
-MVP + graph model + search engine implemented and verified locally:
+MVP + graph model + search engine + bulk tools implemented and verified locally:
 - `pip install .` builds and installs the package + console script.
 - Server starts over stdio (default) and SSE (`--web`); `create_server()`
-  registers 13 tools + 2 resources.
+  registers 20 tools (13 singular/query + 7 bulk) + 2 resources.
 - MemoryStore CRUD + FTS5/BM25 search (`search_scored`) with graph spreading
   activation + graph ops (link/detail/recall_related/connect_memories/
   memory_map) + stats verified via smoke test.
+- Bulk tools (`store_memories`, `recall_memories`, `update_memories`,
+  `forget_memories`, `add_details`, `link_memories_bulk`,
+  `unlink_memories_bulk`) verified via smoke test: each processes a mixed
+  batch (valid item, missing/not-found id, malformed item) and reports correct
+  per-item status without aborting the batch.
 - Migration verified against the real DB: 131 memories preserved across two
   upgrades (graph tables, then FTS index backfilled = 131 rows), each with an
   auto-backup under `~/.brainmemory-mcp/backups/`.
@@ -305,8 +368,8 @@ Possible Solution: Evaluate a vector store for semantic recall later.
 
 Issue: Concrete cognitive tool set and schemas undefined.
 Priority: Medium
-Status: Resolved — 13 tools + 2 resources implemented (see Technical Details):
-7 core memory tools + 6 graph tools.
+Status: Resolved — 20 tools + 2 resources implemented (see Technical Details):
+7 core memory tools + 6 graph tools + 7 bulk tools.
 Possible Solution: Extend with reasoning/summarization backed by an LLM.
 
 Issue: Authentication/security model for the HTTP/SSE endpoint undefined.
@@ -339,17 +402,34 @@ memories start unconnected after migration.
 Priority: Low
 Status: Open
 Possible Solution: Add an optional "suggest connections" step from shared
-tags/category co-occurrence to bootstrap the graph.
+tags/category co-occurrence to bootstrap the graph (discussed conceptually as
+a "graphify" tool: score candidates by tag-overlap + category match + BM25
+text similarity, cap links per memory, and default to a `dry_run` preview
+before writing). Not yet implemented.
+
+Issue: Single-item tools required N round-trips for N items (store/recall/
+update/forget/link/unlink/add_detail), adding token + latency overhead for
+agents doing batch work.
+Priority: Medium
+Status: Resolved (v0.8.0) — added `store_memories`, `recall_memories`,
+`update_memories`, `forget_memories`, `add_details`, `link_memories_bulk`,
+`unlink_memories_bulk`; each takes a list of per-item payloads and reports
+per-item status so partial failures don't abort the batch.
+Possible Solution (future): Consider `brief`/`fields` projection params on
+`search_memory`/`list_memories`/`recall_memories` to also shrink per-item
+*output* size (separate from batching), if still needed after using the bulk
+tools.
 
 Issue: No automated tests / CI yet.
 Priority: Medium
 Status: Partial — a build/publish CI (`.github/workflows/publish.yml`) now runs
 `python -m build` + `twine check` on push/PR. Test suite still missing.
 Possible Solution: Add a pytest suite covering MemoryStore (incl. graph ops +
-migration/backup) and tool handlers, and run it in CI on every push/PR.
+migration/backup) and tool handlers (incl. the new bulk tools' partial-failure
+behaviour), and run it in CI on every push/PR.
 
 ## Changelog Reference
 
 Daily and version history is tracked under [`docs/changelog/`](docs/changelog/).
 See `docs/changelog/[yyyy]/[mm]/[dd].md` for per-day entries. Latest:
-`docs/changelog/2026/08/17.md`.
+`docs/changelog/2026/08/18.md`.

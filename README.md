@@ -52,6 +52,41 @@ Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 | `connect_memories` | Shortest connection (path) between two memories. |
 | `memory_map` | Return a map (nodes + links) of the memory graph. |
 
+### Bulk operations (since v0.8.0)
+
+One call instead of many round-trips: each bulk tool takes a **list of
+per-item dicts** and never aborts on a single bad item — every item gets its
+own `status` (`"stored"`/`"updated"`/`"linked"`/... , `"not_found"`, or
+`"error"`) in the response, alongside an overall count.
+
+| Tool | Bulk equivalent of | Item shape |
+|------|--------------------|------------|
+| `store_memories` | `store_memory` | `{content, category?, tags?, importance?}` |
+| `recall_memories` | `recall_memory` | list of `memory_id`s (+ `include_connections` flag) |
+| `update_memories` | `update_memory` | `{memory_id, content?, category?, tags?, importance?}` |
+| `forget_memories` | `forget_memory` | list of `memory_id`s |
+| `add_details` | `add_detail` | `{memory_id, content}` |
+| `link_memories_bulk` | `link_memories` | `{from_id, to_id, relation?, weight?}` |
+| `unlink_memories_bulk` | `unlink_memories` | `{from_id, to_id, relation?}` |
+
+Example — store three memories and link two of them, in two calls instead of
+five:
+
+```json
+// store_memories
+{"items": [
+  {"content": "Nginx reverse proxy config lives in /etc/nginx/sites-available/app.conf", "category": "infra", "tags": ["nginx"]},
+  {"content": "Certbot auto-renews SSL at 3am via cron", "category": "infra", "tags": ["ssl"]},
+  {"content": "DNS for app.example.com points to 203.0.113.10 via Cloudflare", "category": "infra"}
+]}
+
+// link_memories_bulk (using the ids returned above)
+{"links": [
+  {"from_id": "<id-1>", "to_id": "<id-2>", "relation": "depends_on"},
+  {"from_id": "<id-1>", "to_id": "<id-3>", "relation": "depends_on"}
+]}
+```
+
 Two read-only resources are exposed as JSON: `brainmemory://stats` (the summary)
 and `brainmemory://graph` (the nodes + links map).
 

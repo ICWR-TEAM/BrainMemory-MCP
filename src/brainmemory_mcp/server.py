@@ -14,18 +14,30 @@ precise and multi-hop — while the tool vocabulary stays "memory"-oriented.
 
 Cognitive tools:
     - store_memory        : persist a new memory (node)
-    - recall_memory       : fetch a memory by id, with its details + connections
-    - search_memory       : find memories by text / category / tags / importance
-    - list_memories       : list stored memories (most important first)
-    - update_memory       : modify an existing memory
-    - forget_memory       : delete a memory (its details + links cascade away)
-    - add_detail          : attach an extra fact to an existing memory
-    - link_memories       : connect two memories with a directed relation
-    - unlink_memories     : remove connection(s) between two memories
-    - recall_related      : multi-hop recall of memories connected to one memory
-    - connect_memories    : shortest connection (path) between two memories
-    - memory_map          : nodes + links map of the memory graph
-    - summarize_memories  : summary statistics over the memory graph
+    - store_memories       : persist multiple memories in one call
+    - recall_memory        : fetch a memory by id, with its details + connections
+    - recall_memories       : fetch multiple memories by id in one call
+    - search_memory         : find memories by text / category / tags / importance
+    - list_memories         : list stored memories (most important first)
+    - update_memory         : modify an existing memory
+    - update_memories       : modify multiple memories in one call
+    - forget_memory         : delete a memory (its details + links cascade away)
+    - forget_memories        : delete multiple memories in one call
+    - add_detail            : attach an extra fact to an existing memory
+    - add_details            : attach multiple facts in one call
+    - link_memories          : connect two memories with a directed relation
+    - link_memories_bulk      : connect multiple pairs of memories in one call
+    - unlink_memories        : remove connection(s) between two memories
+    - unlink_memories_bulk    : remove connection(s) for multiple pairs in one call
+    - recall_related         : multi-hop recall of memories connected to one memory
+    - connect_memories       : shortest connection (path) between two memories
+    - memory_map             : nodes + links map of the memory graph
+    - summarize_memories     : summary statistics over the memory graph
+
+Bulk tools accept a list of per-item dicts and never abort on a single bad
+item: each item gets its own per-item status in the response (``"ok"`` /
+``"not_found"`` / ``"error"``) alongside an overall count, so one call can
+replace many round-trips without losing partial progress.
 """
 
 from __future__ import annotations
@@ -62,7 +74,13 @@ def create_server(
             "(trivial) to 5 (critical). Connect related memories with "
             "`link_memories` so you can later `recall_related` (multi-hop) or "
             "`connect_memories` (shortest path) for precise, contextual "
-            "recall. Search before storing to avoid duplicates."
+            "recall. Search before storing to avoid duplicates. When you need "
+            "to store, fetch, update, forget, link, or unlink several "
+            "memories at once, prefer the `_bulk`/plural tools "
+            "(`store_memories`, `recall_memories`, `update_memories`, "
+            "`forget_memories`, `add_details`, `link_memories_bulk`, "
+            "`unlink_memories_bulk`) over repeated single-item calls — one "
+            "call, one response, less overhead."
         ),
         host=host,
         port=port,
@@ -97,6 +115,45 @@ def create_server(
         return {"status": "stored", "memory": mem.to_dict()}
 
     @mcp.tool()
+    def store_memories(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Persist multiple memories in one call (bulk `store_memory`).
+
+        Use this instead of calling `store_memory` in a loop when importing or
+        recording several facts at once — one round-trip instead of many.
+
+        Args:
+            items: List of memories to store. Each item is a dict with:
+                ``content`` (required), ``category`` (default "general"),
+                ``tags`` (optional list), ``importance`` (default 3).
+
+        Returns:
+            ``results`` has one entry per input item, in order, each with
+            ``status`` ("stored" or "error") and, on success, the new ``id``.
+        """
+        results: list[dict[str, Any]] = []
+        stored = 0
+        for idx, item in enumerate(items):
+            content = (item or {}).get("content")
+            if not content or not str(content).strip():
+                results.append(
+                    {"index": idx, "status": "error", "error": "content is required"}
+                )
+                continue
+            try:
+                mem = store.store(
+                    content,
+                    category=item.get("category", "general"),
+                    tags=item.get("tags") or [],
+                    importance=item.get("importance", 3),
+                )
+            except ValueError as exc:
+                results.append({"index": idx, "status": "error", "error": str(exc)})
+                continue
+            results.append({"index": idx, "status": "stored", "id": mem.id})
+            stored += 1
+        return {"status": "ok", "count": len(items), "stored": stored, "results": results}
+
+    @mcp.tool()
     def recall_memory(memory_id: str) -> dict[str, Any]:
         """Recall a single memory by its id, with its details and connections.
 
@@ -116,6 +173,50 @@ def create_server(
                 "outgoing": [l.to_dict() for l in links["outgoing"]],
                 "incoming": [l.to_dict() for l in links["incoming"]],
             },
+        }
+
+    @mcp.tool()
+    def recall_memories(
+        memory_ids: list[str],
+        include_connections: bool = False,
+    ) -> dict[str, Any]:
+        """Recall multiple memories by id in one call (bulk `recall_memory`).
+
+        Useful after a `search_memory` call to fetch several hits at once
+        instead of one `recall_memory` call per id.
+
+        Args:
+            memory_ids: The ids to fetch.
+            include_connections: If True, also include each memory's details
+                and connections (more output per item). Defaults to False for
+                a leaner response.
+
+        Returns:
+            ``memories`` has one entry per requested id, in order, each with
+            ``status`` ("ok" or "not_found").
+        """
+        results: list[dict[str, Any]] = []
+        for mid in memory_ids:
+            mem = store.get(mid)
+            if mem is None:
+                results.append({"id": mid, "status": "not_found"})
+                continue
+            entry: dict[str, Any] = {"id": mid, "status": "ok", "memory": mem.to_dict()}
+            if include_connections:
+                details = store.list_details(mid)
+                links = store.links_of(mid)
+                entry["details"] = [d.to_dict() for d in details]
+                entry["connections"] = {
+                    "outgoing": [l.to_dict() for l in links["outgoing"]],
+                    "incoming": [l.to_dict() for l in links["incoming"]],
+                }
+            results.append(entry)
+        found = sum(1 for r in results if r["status"] == "ok")
+        return {
+            "status": "ok",
+            "count": len(memory_ids),
+            "found": found,
+            "memories": results,
         }
 
     @mcp.tool()
@@ -211,6 +312,48 @@ def create_server(
         return {"status": "updated", "memory": mem.to_dict()}
 
     @mcp.tool()
+    def update_memories(updates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update multiple memories in one call (bulk `update_memory`).
+
+        Handy for batch corrections, e.g. re-tagging or re-scoring importance
+        across several memories at once.
+
+        Args:
+            updates: List of updates. Each item is a dict with:
+                ``memory_id`` (required), and optionally ``content``,
+                ``category``, ``tags``, ``importance`` (only supplied fields
+                change, same semantics as `update_memory`).
+
+        Returns:
+            ``results`` has one entry per input item, in order, each with
+            ``status`` ("updated", "not_found" or "error").
+        """
+        results: list[dict[str, Any]] = []
+        updated = 0
+        for idx, item in enumerate(updates):
+            memory_id = (item or {}).get("memory_id")
+            if not memory_id:
+                results.append(
+                    {"index": idx, "status": "error", "error": "memory_id is required"}
+                )
+                continue
+            mem = store.update(
+                memory_id,
+                content=item.get("content"),
+                category=item.get("category"),
+                tags=item.get("tags"),
+                importance=item.get("importance"),
+            )
+            if mem is None:
+                results.append(
+                    {"index": idx, "memory_id": memory_id, "status": "not_found"}
+                )
+                continue
+            results.append({"index": idx, "memory_id": memory_id, "status": "updated"})
+            updated += 1
+        return {"status": "ok", "count": len(updates), "updated": updated, "results": results}
+
+    @mcp.tool()
     def forget_memory(memory_id: str) -> dict[str, Any]:
         """Forget (delete) a memory by its id.
 
@@ -223,6 +366,36 @@ def create_server(
         return {
             "status": "forgotten" if removed else "not_found",
             "memory_id": memory_id,
+        }
+
+    @mcp.tool()
+    def forget_memories(memory_ids: list[str]) -> dict[str, Any]:
+        """Forget (delete) multiple memories by id in one call (bulk `forget_memory`).
+
+        Each memory's details and connections cascade away too. Handy for
+        cleaning up duplicates or a batch of stale memories.
+
+        Args:
+            memory_ids: The ids of the memories to delete.
+
+        Returns:
+            ``results`` has one entry per input id, in order, each with
+            ``status`` ("forgotten" or "not_found").
+        """
+        results: list[dict[str, Any]] = []
+        removed = 0
+        for memory_id in memory_ids:
+            ok = store.forget(memory_id)
+            results.append(
+                {"memory_id": memory_id, "status": "forgotten" if ok else "not_found"}
+            )
+            if ok:
+                removed += 1
+        return {
+            "status": "ok",
+            "count": len(memory_ids),
+            "removed": removed,
+            "results": results,
         }
 
     @mcp.tool()
@@ -239,6 +412,52 @@ def create_server(
         if detail is None:
             return {"status": "not_found", "memory_id": memory_id}
         return {"status": "added", "detail": detail.to_dict()}
+
+    @mcp.tool()
+    def add_details(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Attach multiple facts to memories in one call (bulk `add_detail`).
+
+        Items may target different memories, so this doubles as a way to
+        enrich several memories in one round-trip.
+
+        Args:
+            items: List of details to add. Each item is a dict with:
+                ``memory_id`` (required) and ``content`` (required).
+
+        Returns:
+            ``results`` has one entry per input item, in order, each with
+            ``status`` ("added", "not_found" or "error").
+        """
+        results: list[dict[str, Any]] = []
+        added = 0
+        for idx, item in enumerate(items):
+            memory_id = (item or {}).get("memory_id")
+            content = (item or {}).get("content")
+            if not memory_id or not content or not str(content).strip():
+                results.append(
+                    {
+                        "index": idx,
+                        "status": "error",
+                        "error": "memory_id and content are required",
+                    }
+                )
+                continue
+            detail = store.add_detail(memory_id, content)
+            if detail is None:
+                results.append(
+                    {"index": idx, "memory_id": memory_id, "status": "not_found"}
+                )
+                continue
+            results.append(
+                {
+                    "index": idx,
+                    "memory_id": memory_id,
+                    "status": "added",
+                    "detail_id": detail.id,
+                }
+            )
+            added += 1
+        return {"status": "ok", "count": len(items), "added": added, "results": results}
 
     @mcp.tool()
     def link_memories(
@@ -269,6 +488,73 @@ def create_server(
         return {"status": "linked", "connection": link.to_dict()}
 
     @mcp.tool()
+    def link_memories_bulk(links: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create multiple connections between memories in one call (bulk `link_memories`).
+
+        Ideal for building out a chunk of the knowledge graph at once, e.g.
+        after storing a batch of related memories.
+
+        Args:
+            links: List of connections to create. Each item is a dict with:
+                ``from_id`` (required), ``to_id`` (required), ``relation``
+                (default "related_to"), ``weight`` (default 1.0).
+
+        Returns:
+            ``results`` has one entry per input item, in order, each with
+            ``status`` ("linked", "not_found" or "error").
+        """
+        results: list[dict[str, Any]] = []
+        linked = 0
+        for idx, item in enumerate(links):
+            from_id = (item or {}).get("from_id")
+            to_id = (item or {}).get("to_id")
+            if not from_id or not to_id:
+                results.append(
+                    {
+                        "index": idx,
+                        "status": "error",
+                        "error": "from_id and to_id are required",
+                    }
+                )
+                continue
+            relation = item.get("relation", DEFAULT_RELATION)
+            weight = item.get("weight", 1.0)
+            try:
+                link = store.link(from_id, to_id, relation=relation, weight=weight)
+            except ValueError as exc:
+                results.append(
+                    {
+                        "index": idx,
+                        "from_id": from_id,
+                        "to_id": to_id,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
+                continue
+            if link is None:
+                results.append(
+                    {
+                        "index": idx,
+                        "from_id": from_id,
+                        "to_id": to_id,
+                        "status": "not_found",
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "index": idx,
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "relation": link.relation,
+                    "status": "linked",
+                }
+            )
+            linked += 1
+        return {"status": "ok", "count": len(links), "linked": linked, "results": results}
+
+    @mcp.tool()
     def unlink_memories(
         from_id: str,
         to_id: str,
@@ -288,6 +574,55 @@ def create_server(
             "removed": removed,
             "from_id": from_id,
             "to_id": to_id,
+        }
+
+    @mcp.tool()
+    def unlink_memories_bulk(links: list[dict[str, Any]]) -> dict[str, Any]:
+        """Remove connections for multiple memory pairs in one call (bulk `unlink_memories`).
+
+        Args:
+            links: List of pairs to unlink. Each item is a dict with:
+                ``from_id`` (required), ``to_id`` (required), and optional
+                ``relation`` (if omitted, every connection between the pair is
+                removed).
+
+        Returns:
+            ``results`` has one entry per input item, in order, each with
+            ``status`` ("unlinked", "not_found" or "error") and the number of
+            connections ``removed`` for that item.
+        """
+        results: list[dict[str, Any]] = []
+        unlinked = 0
+        for idx, item in enumerate(links):
+            from_id = (item or {}).get("from_id")
+            to_id = (item or {}).get("to_id")
+            if not from_id or not to_id:
+                results.append(
+                    {
+                        "index": idx,
+                        "status": "error",
+                        "error": "from_id and to_id are required",
+                    }
+                )
+                continue
+            relation = item.get("relation")
+            removed = store.unlink(from_id, to_id, relation=relation)
+            results.append(
+                {
+                    "index": idx,
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "status": "unlinked" if removed else "not_found",
+                    "removed": removed,
+                }
+            )
+            if removed:
+                unlinked += 1
+        return {
+            "status": "ok",
+            "count": len(links),
+            "unlinked": unlinked,
+            "results": results,
         }
 
     @mcp.tool()

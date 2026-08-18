@@ -15,6 +15,12 @@ ranks results with BM25 (multi-word / long queries welcome), and graph
 **spreading activation** pulls in connected memories so related context
 surfaces. Falls back to a tokenised LIKE scorer where FTS5 is unavailable.
 
+Since v0.8.0 the core/graph tools that operate on a single memory each have a
+**bulk** counterpart (``store_memories``, ``recall_memories``,
+``update_memories``, ``forget_memories``, ``add_details``,
+``link_memories_bulk``, ``unlink_memories_bulk``) so an agent can act on many
+memories in one round-trip instead of many.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -22,7 +28,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from .memory import (
     Memory,
