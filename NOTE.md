@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-18
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.8.0)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search, with bulk tool variants for every single-item write/read operation
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.9.0)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; consolidated 12-tool surface with full CRUD over memories/details/links (every op takes a list; mixed-op batch tools for details/links)
 
 ---
 
@@ -51,6 +51,15 @@ Scope (initial intent):
 > per-item `status` so one bad item never aborts the whole batch. Committed +
 > pushed to `origin/main`, tagged `v0.8.0`, and published to PyPI (manual
 > `twine upload` with an API token — see "Credentials & Secrets" below).
+>
+> Status update (2026-08-18, later): **Consolidated the tool surface 20 -> 12**
+> (breaking change, v0.9.0) and completed the missing detail CRUD. Every
+> operation now takes a list (single item = list of one); the singular tools
+> were removed as redundant. Detail and link writes are unified into
+> mixed-operation batch tools: `edit_details` (op add/update/delete — update
+> and delete are NEW capabilities, closing the "can't remove/fix one detail"
+> gap) and `edit_links` (op link/unlink). Graph model, schema, algorithms and
+> search are untouched. Released v0.9.0.
 
 ## Mandatory Workflow
 
@@ -134,48 +143,51 @@ Describe:
   auto-backs it up to `~/.brainmemory-mcp/backups/memory-<UTC>.db` (SQLite
   online backup API) before the new objects are added — non-destructive
   migration.
-- **API structure (Cognitive tools):**
-  - Core memory:
-    - `store_memory(content, category, tags, importance)`
-    - `store_memories(items)` — bulk `store_memory`; `items` is a list of
-      `{content, category?, tags?, importance?}`; per-item `status`.
-    - `recall_memory(memory_id)` — returns the memory + its details + connections
-    - `recall_memories(memory_ids, include_connections=False)` — bulk
-      `recall_memory`; `include_connections` opts into the richer per-item
-      payload (details + connections), off by default for a leaner response.
+- **API structure (Cognitive tools — 12 since v0.9.0, full CRUD over all 3 entities):**
+  - Memory CRUD (all list-based; one item = list of one):
+    - `store_memories(items)` — Create; `items` = list of
+      `{content, category?, tags?, importance?}`; per-item `status`, each
+      success carries the stored `memory` (incl. generated `id`).
+    - `recall_memories(memory_ids, include_details=False, include_links=False)`
+      — Read by id; lean by default, flags opt into details (each with its
+      `id`, usable in `edit_details`) and/or connections.
+    - `update_memories(updates)` — Update; `updates` = list of
+      `{memory_id, content?, category?, tags?, importance?}`; success entries
+      carry the updated `memory`.
+    - `forget_memories(memory_ids)` — Delete; cascades to details + links.
+  - Query/listing:
     - `search_memory(query, category, tags, min_importance, limit, expand, mode)`
       — search-engine ranking (FTS5/BM25, multi-word queries) over
       content/tags/category/details, blended with importance + recency, and
       graph-augmented via spreading activation (`expand`). Results carry
       `relevance`, `match_type`, `matched_terms`, `distance`.
     - `list_memories(limit, offset)`
-    - `update_memory(memory_id, content?, category?, tags?, importance?)`
-    - `update_memories(updates)` — bulk `update_memory`; `updates` is a list of
-      `{memory_id, content?, category?, tags?, importance?}`.
-    - `forget_memory(memory_id)` — cascades to details + links
-    - `forget_memories(memory_ids)` — bulk `forget_memory`.
     - `summarize_memories()` — totals, categories, top tags, connection stats,
       most-connected memories
-  - Graph memory:
-    - `add_detail(memory_id, content)`
-    - `add_details(items)` — bulk `add_detail`; items may target different
-      memories, doubling as a multi-memory enrichment call.
-    - `link_memories(from_id, to_id, relation, weight)`
-    - `link_memories_bulk(links)` — bulk `link_memories`; `links` is a list of
-      `{from_id, to_id, relation?, weight?}`.
-    - `unlink_memories(from_id, to_id, relation?)`
-    - `unlink_memories_bulk(links)` — bulk `unlink_memories`.
+  - Detail CRUD (mixed-op batch):
+    - `edit_details(items)` — each item's `op` selects the operation:
+      `{op:"add", memory_id, content}` / `{op:"update", detail_id, content}` /
+      `{op:"delete", detail_id}`. Per-item status
+      added/updated/deleted/not_found/error; `applied` counts successes.
+      (Read side lives in `recall_memories(include_details=True)`.)
+  - Link CRUD (mixed-op batch):
+    - `edit_links(items)` — `{op:"link", from_id, to_id, relation?, weight?}`
+      (upsert: re-link same from/to/relation updates weight) /
+      `{op:"unlink", from_id, to_id, relation?}` (no relation = remove all
+      between the pair; result carries `removed` count). Self-links rejected
+      per-item as `error`.
+  - Graph reads:
     - `recall_related(memory_id, depth, relation?, limit)` — multi-hop recall
     - `connect_memories(from_id, to_id, max_depth)` — shortest path
     - `memory_map(memory_id?, depth, limit)` — nodes + links map
   - Resources: `brainmemory://stats` (JSON summary), `brainmemory://graph`
     (JSON nodes + links map).
-  - Bulk-tool convention: every bulk tool takes a `list[dict]` of per-item
-    payloads, never raises/aborts on one bad item, and returns
-    `{status: "ok", count, <verb-count>, results: [...]}` where each `results`
-    entry carries its own `status` (the tool's normal per-item status value, or
-    `"error"` with an `error` message for a malformed item). This keeps
-    behaviour predictable for partial-failure batches.
+  - List-tool convention: every list-taking tool processes items
+    independently, never raises/aborts on one bad item, and returns
+    `{status: "ok", count, <success-counter>, results: [...]}` where each
+    `results` entry carries its own `status` (op-specific value, `"not_found"`,
+    or `"error"` with an `error` message). Predictable partial-failure
+    batches.
 - **Packaging:** `pyproject.toml` (PEP 621 / setuptools, `src/` layout).
   Version is single-sourced from `brainmemory_mcp.__version__` via
   `[tool.setuptools.dynamic]`. Installable via `pip install brainmemory-mcp`
@@ -201,7 +213,7 @@ README.md                      # usage & install docs
 src/brainmemory_mcp/
     __init__.py                # package exports + version
     __main__.py                # CLI entry point (argparse: --web/--host/--port/--data-dir)
-    server.py                  # FastMCP server, Cognitive + graph + bulk tools, run(web=...)
+    server.py                  # FastMCP server, 12 consolidated Cognitive tools, run(web=...)
     memory.py                  # SQLite graph store: Memory/MemoryDetail/MemoryLink + MemoryStore
 .github/workflows/publish.yml   # CI: build + Trusted-Publishing to PyPI
 docs/RELEASING.md              # how to cut a release / publish to PyPI
@@ -219,10 +231,11 @@ Describe:
   (default) or HTTP/SSE (`--web`) — cognitive tool calls such as
   store/recall/search/link/traverse a memory, single-item or bulk.
 - **Processing:** `FastMCP` routes each tool call to its handler in
-  `server.py`, which delegates to `MemoryStore` (`memory.py`). Bulk handlers
-  loop over their input list, calling the same `MemoryStore` methods as their
-  singular counterparts per item, and collect a per-item result instead of
-  raising on the first failure.
+  `server.py`, which delegates to `MemoryStore` (`memory.py`). List-taking
+  handlers loop over their input, calling the corresponding `MemoryStore`
+  method per item (for `edit_details`/`edit_links`, dispatching on the item's
+  `op`), and collect a per-item result instead of raising on the first
+  failure.
 - **Logic:** Cognitive tools implement memory operations over a knowledge
   graph — persisting new memories (nodes), attaching details, connecting
   memories (directed weighted links), retrieving relevant memories
@@ -390,29 +403,63 @@ removed after upload (already git-ignored anyway). No secret value appears in
 this file, the changelog, or any git-tracked file — see "Credentials &
 Secrets" above for where it actually lives.
 
+Date: 2026-08-18
+Decision: Consolidate the tool surface from 20 tools to 12 with full CRUD over
+all three entities; remove singular tools; unify detail/link writes into
+mixed-operation batch tools (`edit_details`, `edit_links`); release v0.9.0
+(breaking change).
+Reason: (1) Tool count was heading to ~26 once the missing detail CRUD
+(update/delete a single detail — the gap that forced a destructive
+forget+recreate workaround) was added under the old one-tool-per-op pattern;
+a large tool list costs tokens in every session's `list_tools` and confuses
+agents with near-duplicate choices. (2) A singular tool is strictly redundant
+with its bulk form (one item = list of one). User chose "Approach B" (per-op
+`op` field batches) over keeping singular+bulk pairs, accepting the breaking
+change while still on 0.x.
+Impact: Final 12 tools = 4 memory CRUD (`store_memories`, `recall_memories`
+with `include_details`/`include_links` flags, `update_memories`,
+`forget_memories`) + 3 query (`search_memory`, `list_memories`,
+`summarize_memories`) + 2 mixed-op writers (`edit_details` op
+add/update/delete; `edit_links` op link/unlink) + 3 graph reads
+(`recall_related`, `connect_memories`, `memory_map`). Removed names:
+`store_memory`, `recall_memory`, `update_memory`, `forget_memory`,
+`add_detail`, `add_details`, `link_memories`, `link_memories_bulk`,
+`unlink_memories`, `unlink_memories_bulk`. NEW capabilities: `update_detail`
+(new `MemoryStore` method; FTS stays in sync via the existing
+`memory_details_fts_au` trigger) and per-detail delete exposed for the first
+time (store method existed since v0.4.0 but was never a tool). The graph
+model is untouched: schema, BFS algorithms, spreading-activation search,
+upsert-on-relink, cascade deletes and both resources behave identically —
+only the tool names/shapes changed. Verified by an exhaustive smoke test of
+all 12 tools (incl. per-item error paths, FTS sync after detail
+update/delete, and cascade on forget).
+
 ## Current State
 
-MVP + graph model + search engine + bulk tools implemented, published, and
-verified:
+MVP + graph model + search engine + consolidated 12-tool CRUD surface
+implemented, published, and verified:
 - `pip install .` builds and installs the package + console script.
 - Server starts over stdio (default) and SSE (`--web`); `create_server()`
-  registers 20 tools (13 singular/query + 7 bulk) + 2 resources.
-- MemoryStore CRUD + FTS5/BM25 search (`search_scored`) with graph spreading
-  activation + graph ops (link/detail/recall_related/connect_memories/
-  memory_map) + stats verified via smoke test.
-- Bulk tools (`store_memories`, `recall_memories`, `update_memories`,
-  `forget_memories`, `add_details`, `link_memories_bulk`,
-  `unlink_memories_bulk`) verified via smoke test: each processes a mixed
-  batch (valid item, missing/not-found id, malformed item) and reports correct
-  per-item status without aborting the batch.
+  registers exactly **12 tools + 2 resources** (v0.9.0 consolidation).
+- Full CRUD verified for all 3 entities via exhaustive smoke test of every
+  tool: memory create/read/update/delete (list-based, per-item status),
+  `edit_details` add/update/delete (incl. NEW update/delete-single-detail
+  capability), `edit_links` link (upsert weight)/unlink (relation-specific
+  and remove-all), graph reads (`recall_related`, `connect_memories`,
+  `memory_map`), `search_memory` (text hits + `related` via graph expansion),
+  `list_memories`, `summarize_memories`; error paths (missing ids, malformed
+  items, self-link, empty content, unknown `op`) all yield per-item statuses
+  without aborting batches; FTS index verified in sync after detail
+  add/update/delete; cascade verified (forget removes details + links).
 - Migration verified against the real DB: 131 memories preserved across two
   upgrades (graph tables, then FTS index backfilled = 131 rows), each with an
   auto-backup under `~/.brainmemory-mcp/backups/`.
 - Memory persists to `~/.brainmemory-mcp` (SQLite), overridable via `--data-dir`.
-- **v0.8.0 published**: commit `4cf1371` + tag `v0.8.0` pushed to
-  `origin/main`; `brainmemory-mcp==0.8.0` live on PyPI (verified via the PyPI
-  JSON API). PyPI API token for future manual releases stored in `~/.pypirc`
-  on this machine (not in the repo — see "Credentials & Secrets").
+- **v0.9.0 published** (breaking tool consolidation; DB untouched). Previous:
+  v0.8.0 commit `4cf1371`. PyPI API token for manual releases stored in
+  `~/.pypirc` on this machine (not in the repo — see "Credentials & Secrets"),
+  and also saved (at the user's explicit request) as a memory in the user's
+  own BrainMemory store under category `credentials`.
 
 ## Pending Issue
 
@@ -432,9 +479,26 @@ Possible Solution: Evaluate a vector store for semantic recall later.
 
 Issue: Concrete cognitive tool set and schemas undefined.
 Priority: Medium
-Status: Resolved — 20 tools + 2 resources implemented (see Technical Details):
-7 core memory tools + 6 graph tools + 7 bulk tools.
+Status: Resolved — consolidated to 12 tools + 2 resources (v0.9.0; see
+Technical Details): 4 memory CRUD + 3 query + `edit_details` + `edit_links`
++ 3 graph reads. Full CRUD over memories/details/links.
 Possible Solution: Extend with reasoning/summarization backed by an LLM.
+
+Issue: Detail CRUD was incomplete — no way to update or delete a single
+detail via MCP tools (`MemoryStore.delete_detail` existed since v0.4.0 but
+was never exposed; `update_detail` did not exist at all), forcing a
+destructive forget-and-recreate workaround to fix one stale detail.
+Priority: Medium
+Status: Resolved (v0.9.0) — `edit_details` exposes add/update/delete per
+item; new `MemoryStore.update_detail` added (FTS sync via existing trigger,
+verified).
+
+Issue: Tool count was growing toward ~26 with singular+bulk duplicates,
+inflating per-session `list_tools` token overhead.
+Priority: Medium
+Status: Resolved (v0.9.0) — consolidated 20 -> 12 by removing redundant
+singular tools (one item = list of one) and unifying detail/link writes into
+mixed-op batch tools. Breaking change accepted while still on 0.x.
 
 Issue: Authentication/security model for the HTTP/SSE endpoint undefined.
 Priority: Medium

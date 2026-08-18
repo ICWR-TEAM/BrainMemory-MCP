@@ -859,6 +859,31 @@ class MemoryStore:
             ).fetchall()
         return [_row_to_detail(r) for r in rows]
 
+    def update_detail(self, detail_id: str, content: str) -> MemoryDetail | None:
+        """Update the content of an existing detail. Returns the updated detail.
+
+        Returns ``None`` if no detail with that id exists; raises ``ValueError``
+        for empty content. The FTS index stays in sync via the
+        ``memory_details_fts_au`` trigger.
+        """
+        if not content or not content.strip():
+            raise ValueError("detail content must not be empty")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_details WHERE id = ?", (detail_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE memory_details SET content = ? WHERE id = ?",
+                (content.strip(), detail_id),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM memory_details WHERE id = ?", (detail_id,)
+            ).fetchone()
+        return _row_to_detail(row)
+
     def delete_detail(self, detail_id: str) -> bool:
         """Delete a single detail by id. Returns True if a row was removed."""
         with self._connect() as conn:

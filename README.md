@@ -27,68 +27,67 @@ The server runs in two modes:
 
 Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 
-## Cognitive Tools
+## Cognitive Tools (12)
 
-### Core memory
+Since **v0.9.0** the tool surface is consolidated: **every operation takes a
+list**, so acting on one memory or fifty is the same call (a single item is
+just a list of one). Detail and link writes are unified into one
+mixed-operation batch tool per entity. The result is full **CRUD over all
+three entities** with just 12 tools.
 
 | Tool | Description |
 |------|-------------|
-| `store_memory` | Persist a new memory (content, category, tags, importance). |
-| `recall_memory` | Fetch a memory by id, with its details and connections. |
+| `store_memories` | Persist one or more memories (content, category, tags, importance). |
+| `recall_memories` | Fetch one or more memories by id; opt-in `include_details` / `include_links` for the richer payload. |
 | `search_memory` | Search-engine style: rank memories by relevance (BM25) for multi-word/long queries; also searches details; optional graph `expand`. |
 | `list_memories` | List stored memories (most important & recent first). |
-| `update_memory` | Modify an existing memory (only supplied fields change). |
-| `forget_memory` | Delete a memory (its details and connections cascade away). |
-| `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
-
-### Graph memory
-
-| Tool | Description |
-|------|-------------|
-| `add_detail` | Attach an extra fact/observation to an existing memory. |
-| `link_memories` | Connect two memories with a directed relation (+ weight). |
-| `unlink_memories` | Remove connection(s) between two memories. |
+| `update_memories` | Modify one or more memories (only supplied fields change). |
+| `forget_memories` | Delete one or more memories (details and connections cascade away). |
+| `edit_details` | Add / update / delete extra facts attached to memories — mixed ops in one batch. |
+| `edit_links` | Create (`link`) / remove (`unlink`) directed connections — mixed ops in one batch. |
 | `recall_related` | Multi-hop recall: memories connected to one memory, up to *depth* hops. |
 | `connect_memories` | Shortest connection (path) between two memories. |
 | `memory_map` | Return a map (nodes + links) of the memory graph. |
+| `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
 
-### Bulk operations (since v0.8.0)
+Every list-taking tool processes items independently and reports a per-item
+`status` — one bad item never aborts the batch.
 
-One call instead of many round-trips: each bulk tool takes a **list of
-per-item dicts** and never aborts on a single bad item — every item gets its
-own `status` (`"stored"`/`"updated"`/`"linked"`/... , `"not_found"`, or
-`"error"`) in the response, alongside an overall count.
+### Mixed-operation batches
 
-| Tool | Bulk equivalent of | Item shape |
-|------|--------------------|------------|
-| `store_memories` | `store_memory` | `{content, category?, tags?, importance?}` |
-| `recall_memories` | `recall_memory` | list of `memory_id`s (+ `include_connections` flag) |
-| `update_memories` | `update_memory` | `{memory_id, content?, category?, tags?, importance?}` |
-| `forget_memories` | `forget_memory` | list of `memory_id`s |
-| `add_details` | `add_detail` | `{memory_id, content}` |
-| `link_memories_bulk` | `link_memories` | `{from_id, to_id, relation?, weight?}` |
-| `unlink_memories_bulk` | `unlink_memories` | `{from_id, to_id, relation?}` |
-
-Example — store three memories and link two of them, in two calls instead of
-five:
+`edit_details` — each item's `op` selects the operation:
 
 ```json
-// store_memories
 {"items": [
-  {"content": "Nginx reverse proxy config lives in /etc/nginx/sites-available/app.conf", "category": "infra", "tags": ["nginx"]},
-  {"content": "Certbot auto-renews SSL at 3am via cron", "category": "infra", "tags": ["ssl"]},
-  {"content": "DNS for app.example.com points to 203.0.113.10 via Cloudflare", "category": "infra"}
-]}
-
-// link_memories_bulk (using the ids returned above)
-{"links": [
-  {"from_id": "<id-1>", "to_id": "<id-2>", "relation": "depends_on"},
-  {"from_id": "<id-1>", "to_id": "<id-3>", "relation": "depends_on"}
+  {"op": "add",    "memory_id": "<id>", "content": "config lives in /etc/nginx"},
+  {"op": "update", "detail_id": "<id>", "content": "corrected fact"},
+  {"op": "delete", "detail_id": "<id>"}
 ]}
 ```
 
+`edit_links` — connect/disconnect memories, mixed in one call:
+
+```json
+{"items": [
+  {"op": "link",   "from_id": "<a>", "to_id": "<b>", "relation": "depends_on", "weight": 0.9},
+  {"op": "link",   "from_id": "<a>", "to_id": "<c>"},
+  {"op": "unlink", "from_id": "<a>", "to_id": "<d>"}
+]}
+```
+
+Re-linking the same from/to/relation updates the weight (upsert). Detail ids
+are returned by the `add` op and by `recall_memories(include_details=true)`.
+
 Two read-only resources are exposed as JSON: `brainmemory://stats` (the summary)
 and `brainmemory://graph` (the nodes + links map).
+
+> **Migrating from v0.8.0 or earlier:** the singular tools (`store_memory`,
+> `recall_memory`, `update_memory`, `forget_memory`, `add_detail`,
+> `link_memories`, `unlink_memories`) and the v0.8.0 bulk names
+> (`store_memories` kept its name; `add_details`, `link_memories_bulk`,
+> `unlink_memories_bulk` were folded into `edit_details` / `edit_links`) are
+> replaced by the 12 tools above. The **database is untouched** — only the
+> tool names/shapes changed, not the storage or graph model.
 
 ## Search (like a search engine)
 
@@ -232,10 +231,10 @@ centrality in `summarize_memories`) are computed with plain SQL + a little
 Python — no external services or vector database required.
 
 Nothing is ever silently deleted — removal only happens through
-`forget_memory`, `unlink_memories`, or detail deletion. When an older
-database is opened that lacks the newest schema (the graph tables or the FTS
-index), it is **backed up automatically** to `~/.brainmemory-mcp/backups/`
-before the new objects are added.
+`forget_memories` or explicit `delete` ops in `edit_details` / `edit_links`.
+When an older database is opened that lacks the newest schema (the graph
+tables or the FTS index), it is **backed up automatically** to
+`~/.brainmemory-mcp/backups/` before the new objects are added.
 
 ## License
 
