@@ -27,13 +27,13 @@ The server runs in two modes:
 
 Memory is persisted locally under **`~/.brainmemory-mcp`** (a SQLite database).
 
-## Cognitive Tools (12)
+## Cognitive Tools (15)
 
 Since **v0.9.0** the tool surface is consolidated: **every operation takes a
 list**, so acting on one memory or fifty is the same call (a single item is
 just a list of one). Detail and link writes are unified into one
 mixed-operation batch tool per entity. The result is full **CRUD over all
-three entities** with just 12 tools.
+three entities** with 15 tools.
 
 | Tool | Description |
 |------|-------------|
@@ -42,13 +42,16 @@ three entities** with just 12 tools.
 | `search_memory` | Search-engine style: rank memories by relevance (BM25) for multi-word/long queries; also searches details; optional graph `expand`. |
 | `list_memories` | List stored memories (most important & recent first). |
 | `update_memories` | Modify one or more memories (only supplied fields change). |
-| `forget_memories` | Delete one or more memories (details and connections cascade away). |
+| `forget_memories` | Delete one or more memories (now soft-deletes into trash for safety). |
 | `edit_details` | Add / update / delete extra facts attached to memories — mixed ops in one batch. |
 | `edit_links` | Create (`link`) / remove (`unlink`) directed connections — mixed ops in one batch. |
 | `recall_related` | Multi-hop recall: memories connected to one memory, up to *depth* hops. |
 | `connect_memories` | Shortest connection (path) between two memories. |
 | `memory_map` | Return a map (nodes + links) of the memory graph. |
 | `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
+| `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file. |
+| `restore_memories` | Soft-delete trash, history, rollback, and trash purge management. |
+| `transfer_memories` | Export/import graph data and create instant database backups. |
 
 Every list-taking tool processes items independently and reports a per-item
 `status` — one bad item never aborts the batch.
@@ -86,7 +89,7 @@ and `brainmemory://graph` (the nodes + links map).
 > `link_memories`, `unlink_memories`) and the v0.8.0 bulk names
 > (`store_memories` kept its name; `add_details`, `link_memories_bulk`,
 > `unlink_memories_bulk` were folded into `edit_details` / `edit_links`) are
-> replaced by the 12 tools above. The **database is untouched** — only the
+> replaced by the 15 tools above. The **database is untouched** — only the
 > tool names/shapes changed, not the storage or graph model.
 
 ## Search (like a search engine)

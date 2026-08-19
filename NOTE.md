@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-19
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.10.2)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled output directory, and full graph data transfer/backup.
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.0)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled absolute output directory, and full graph data transfer/backup.
 
 ---
 
@@ -61,6 +61,8 @@ Scope (initial intent):
 > snapshots, history inspection, version rollback, and trash purging), and
 > `transfer_memories` (full graph JSON export/import & instant online DB backup).
 > Released v0.10.0.
+>
+> Status update (2026-08-19): Release v0.11.0 refreshed the README, kept the 15-tool surface, and bumped the package version.
 
 ## Mandatory Workflow
 
