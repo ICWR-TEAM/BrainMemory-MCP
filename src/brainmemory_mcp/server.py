@@ -630,8 +630,8 @@ def create_server(
 
     @mcp.tool()
     def export_graph_html(
+        directory: str,
         output_path: str = "memory-graph.html",
-        directory: str | None = None,
         category: str | None = None,
         tags: list[str] | None = None,
         label_length: int = 80,
@@ -643,11 +643,10 @@ def create_server(
         interactive node panels. Graph data is embedded directly into the file.
 
         Args:
-            output_path: File name or path to save the HTML visualization to.
-            directory: Optional target directory. Use this to place the export
-                in the agent workspace instead of the MCP server/daemon cwd.
-                When set, relative ``output_path`` values are resolved inside
-                this directory. Absolute ``output_path`` values are accepted as-is.
+            directory: Target directory for the exported HTML.
+            output_path: File name or path to save the HTML visualization to. Relative
+                ``output_path`` values are resolved inside this directory.
+                Absolute ``output_path`` values are accepted as-is.
             category: Optional category filter.
             tags: Optional tags filter (all must match).
             label_length: Max characters for node labels in graph.
@@ -669,8 +668,13 @@ def create_server(
         json_blob = json.dumps(graph_data, ensure_ascii=False)
         rendered = template.replace("/*__GRAPH_DATA__*/", json_blob)
 
+        if not directory:
+            return {
+                "status": "error",
+                "error": "directory is required",
+            }
         raw_out = Path(output_path).expanduser()
-        if directory and not raw_out.is_absolute():
+        if not raw_out.is_absolute():
             out_file = (Path(directory).expanduser() / raw_out).resolve()
         else:
             out_file = raw_out.resolve()
