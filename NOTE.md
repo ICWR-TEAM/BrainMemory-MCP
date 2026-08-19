@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-19
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.10.0)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export, and full graph data transfer/backup.
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.10.1)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled output directory, and full graph data transfer/backup.
 
 ---
 
@@ -53,6 +53,7 @@ Scope (initial intent):
 > Released v0.9.0.
 >
 > Status update (2026-08-19): **Expanded tool surface 12 -> 15** (v0.10.0).
+> Status update (2026-08-19): `export_graph_html` now accepts an optional `directory` parameter so agents can choose the workspace/output folder explicitly instead of defaulting to the daemon cwd. Released v0.10.1.
 > Added `export_graph_html` (renders full graph into interactive standalone 3D
 > HTML file with HUD styling and custom branding `BrainMemory MCP — 3D Knowledge
 > Graph` + `By HarshXor - R&D incrustwerush.org`), `restore_memories` (mixed-op
