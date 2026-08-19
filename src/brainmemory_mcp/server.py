@@ -673,9 +673,15 @@ def create_server(
                 "status": "error",
                 "error": "directory is required",
             }
+        out_dir = Path(directory).expanduser()
+        if not out_dir.is_absolute():
+            return {
+                "status": "error",
+                "error": "directory must be an absolute path",
+            }
         raw_out = Path(output_path).expanduser()
         if not raw_out.is_absolute():
-            out_file = (Path(directory).expanduser() / raw_out).resolve()
+            out_file = (out_dir / raw_out).resolve()
         else:
             out_file = raw_out.resolve()
         out_file.parent.mkdir(parents=True, exist_ok=True)

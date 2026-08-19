@@ -53,7 +53,7 @@ Scope (initial intent):
 > Released v0.9.0.
 >
 > Status update (2026-08-19): **Expanded tool surface 12 -> 15** (v0.10.0).
-> Status update (2026-08-19): `export_graph_html` now requires a `directory` parameter so agents can choose the workspace/output folder explicitly instead of defaulting to the daemon cwd. Released v0.10.2.
+> Status update (2026-08-19): `export_graph_html` now requires a `directory` parameter so agents can choose the workspace/output folder explicitly instead of defaulting to the daemon cwd. Released v0.10.2. Follow-up v0.10.3 enforces `directory` as an absolute path (no `.` / `./` relative workspace ambiguity).
 > Added `export_graph_html` (renders full graph into interactive standalone 3D
 > HTML file with HUD styling and custom branding `BrainMemory MCP — 3D Knowledge
 > Graph` + `By HarshXor - R&D incrustwerush.org`), `restore_memories` (mixed-op
