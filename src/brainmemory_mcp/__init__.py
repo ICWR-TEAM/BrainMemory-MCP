@@ -15,11 +15,16 @@ ranks results with BM25 (multi-word / long queries welcome), and graph
 **spreading activation** pulls in connected memories so related context
 surfaces. Falls back to a tokenised LIKE scorer where FTS5 is unavailable.
 
-Since v0.9.0 the tool surface is **consolidated to 12 tools** with full CRUD
-over all three entities (memories, details, links): every operation takes a
-list (one item or many — same call), and detail/link writes are unified into
-mixed-operation batch tools (``edit_details`` with op add/update/delete,
-``edit_links`` with op link/unlink).
+Since v0.9.0 the tool surface is consolidated with full CRUD over all three
+entities (memories, details, links): every operation takes a list (one item or
+many — same call), and detail/link writes are unified into mixed-operation
+batch tools (``edit_details`` with op add/update/delete, ``edit_links`` with op
+link/unlink).
+
+Since v0.10.0 expanded to **15 tools** with 3 new capabilities:
+- ``export_graph_html`` : standalone interactive 3D HTML visualization
+- ``restore_memories`` : soft delete trash, version history & rollback
+- ``transfer_memories`` : export, import & instant backup of graph data
 
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
@@ -28,7 +33,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 from .memory import (
     Memory,

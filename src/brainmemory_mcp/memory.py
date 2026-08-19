@@ -52,7 +52,7 @@ import sqlite3
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -257,7 +257,8 @@ class MemoryStore:
                 return False  # fresh / unrelated DB
             needs_graph = not self._table_exists(conn, "memory_links")
             needs_fts = self.fts_enabled and not self._table_exists(conn, "memories_fts")
-            return needs_graph or needs_fts
+            needs_safety = not self._table_exists(conn, "memory_trash")
+            return needs_graph or needs_fts or needs_safety
         finally:
             conn.close()
 
@@ -326,6 +327,31 @@ class MemoryStore:
                     UNIQUE(source_id, target_id, relation)
                 );
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_trash (
+                    id          TEXT PRIMARY KEY,
+                    payload     TEXT NOT NULL,
+                    deleted_at  TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_history (
+                    id          TEXT PRIMARY KEY,
+                    memory_id   TEXT NOT NULL,
+                    version     INTEGER NOT NULL,
+                    payload     TEXT NOT NULL,
+                    change      TEXT NOT NULL DEFAULT 'update',
+                    changed_at  TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_memory "
+                "ON memory_history(memory_id, version);"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);"
@@ -780,6 +806,7 @@ class MemoryStore:
         current = self.get(memory_id)
         if current is None:
             return None
+        before = current.to_dict()
 
         if content is not None and content.strip():
             current.content = content.strip()
@@ -792,6 +819,7 @@ class MemoryStore:
         current.updated_at = _utcnow()
 
         with self._connect() as conn:
+            self._add_history(conn, memory_id, before, change="update")
             conn.execute(
                 """
                 UPDATE memories
@@ -811,14 +839,49 @@ class MemoryStore:
         return current
 
     def forget(self, memory_id: str) -> bool:
-        """Delete a memory by id (its details and links cascade away).
+        """Forget a memory by id (its details and links cascade away).
 
-        Returns True if a row was removed.
+        Since v0.10.0 this is a **soft delete**: the memory — together with its
+        details and connections — is snapshotted into the trash
+        (``memory_trash``) before the row is removed, so it can be brought back
+        with :meth:`restore`. Returns True if a row was removed.
         """
         with self._connect() as conn:
-            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            row = conn.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            mem = _row_to_memory(row)
+            details = [
+                _row_to_detail(r)
+                for r in conn.execute(
+                    "SELECT * FROM memory_details WHERE memory_id = ? ORDER BY created_at",
+                    (memory_id,),
+                ).fetchall()
+            ]
+            links = [
+                _row_to_link(r)
+                for r in conn.execute(
+                    "SELECT * FROM memory_links WHERE source_id = ? OR target_id = ?",
+                    (memory_id, memory_id),
+                ).fetchall()
+            ]
+            payload = json.dumps(
+                {
+                    "memory": mem.to_dict(),
+                    "details": [d.to_dict() for d in details],
+                    "links": [l.to_dict() for l in links],
+                }
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_trash (id, payload, deleted_at) "
+                "VALUES (?, ?, ?)",
+                (memory_id, payload, _utcnow()),
+            )
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             conn.commit()
-            return cur.rowcount > 0
+            return True
 
     def clear(self) -> int:
         """Delete ALL memories (details and links cascade). Returns row count."""
@@ -826,6 +889,456 @@ class MemoryStore:
             cur = conn.execute("DELETE FROM memories")
             conn.commit()
             return cur.rowcount
+
+    # -- trash / history (safety net) ---------------------------------------- #
+
+    def _add_history(
+        self,
+        conn: sqlite3.Connection,
+        memory_id: str,
+        snapshot: dict[str, Any],
+        *,
+        change: str = "update",
+    ) -> int:
+        """Append a version snapshot for a memory. Returns the version number."""
+        version = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM memory_history "
+            "WHERE memory_id = ?",
+            (memory_id,),
+        ).fetchone()["v"]
+        conn.execute(
+            "INSERT INTO memory_history (id, memory_id, version, payload, change, changed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uuid.uuid4().hex, memory_id, version, json.dumps(snapshot), change, _utcnow()),
+        )
+        return version
+
+    def list_trash(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """List trashed (forgotten) memories, most recently deleted first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memory_trash ORDER BY deleted_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            payload = json.loads(r["payload"])
+            out.append(
+                {
+                    "id": r["id"],
+                    "deleted_at": r["deleted_at"],
+                    "memory": payload.get("memory", {}),
+                    "details": len(payload.get("details", [])),
+                    "links": len(payload.get("links", [])),
+                }
+            )
+        return out
+
+    def restore(self, memory_id: str) -> dict[str, Any] | None:
+        """Bring a trashed memory back, with its details and connections.
+
+        Connections are re-created only when the other endpoint still exists.
+        Returns ``None`` when the id is not in the trash, a ``status:
+        "conflict"`` dict when a live memory already uses the id, otherwise a
+        ``status: "restored"`` dict with restore counts.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_trash WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row["payload"])
+            m = payload["memory"]
+            if conn.execute(
+                "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone():
+                return {
+                    "status": "conflict",
+                    "reason": "a live memory with this id already exists",
+                }
+            conn.execute(
+                "INSERT INTO memories "
+                "(id, content, category, tags, importance, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    m["id"],
+                    m["content"],
+                    m.get("category", "general"),
+                    json.dumps(m.get("tags") or []),
+                    m.get("importance", 3),
+                    m.get("created_at", _utcnow()),
+                    m.get("updated_at", _utcnow()),
+                ),
+            )
+            for d in payload.get("details", []):
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_details "
+                    "(id, memory_id, content, created_at) VALUES (?, ?, ?, ?)",
+                    (d["id"], d["memory_id"], d["content"], d["created_at"]),
+                )
+            restored_links = 0
+            skipped_links = 0
+            for l in payload.get("links", []):
+                other = l["target_id"] if l["source_id"] == memory_id else l["source_id"]
+                if conn.execute(
+                    "SELECT 1 FROM memories WHERE id = ?", (other,)
+                ).fetchone():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_links "
+                        "(id, source_id, target_id, relation, weight, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            l["id"],
+                            l["source_id"],
+                            l["target_id"],
+                            l["relation"],
+                            l["weight"],
+                            l["created_at"],
+                        ),
+                    )
+                    restored_links += 1
+                else:
+                    skipped_links += 1
+            conn.execute("DELETE FROM memory_trash WHERE id = ?", (memory_id,))
+            conn.commit()
+        return {
+            "status": "restored",
+            "memory": m,
+            "restored_details": len(payload.get("details", [])),
+            "restored_links": restored_links,
+            "skipped_links": skipped_links,
+        }
+
+    def purge_trash(
+        self,
+        *,
+        memory_ids: Iterable[str] | None = None,
+        older_than_days: float | None = None,
+    ) -> int:
+        """Permanently delete trash entries (irreversible). Returns the count.
+
+        With ``memory_ids`` only those entries are purged; with
+        ``older_than_days`` only entries deleted before the cutoff; with
+        neither, the whole trash is emptied.
+        """
+        ids = [str(m) for m in (memory_ids or []) if m]
+        with self._connect() as conn:
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                cur = conn.execute(
+                    f"DELETE FROM memory_trash WHERE id IN ({marks})", ids
+                )
+            elif older_than_days is not None:
+                cutoff = (
+                    datetime.now(timezone.utc) - timedelta(days=float(older_than_days))
+                ).isoformat()
+                cur = conn.execute(
+                    "DELETE FROM memory_trash WHERE deleted_at < ?", (cutoff,)
+                )
+            else:
+                cur = conn.execute("DELETE FROM memory_trash")
+            conn.commit()
+            return cur.rowcount
+
+    def history_of(self, memory_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return a memory's saved versions, newest first.
+
+        Each entry carries ``version_id`` (usable with :meth:`rollback`),
+        ``version``, ``change``, ``changed_at`` and the snapshotted ``memory``.
+        History survives forget/restore cycles.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memory_history WHERE memory_id = ? "
+                "ORDER BY version DESC LIMIT ?",
+                (memory_id, max(1, int(limit))),
+            ).fetchall()
+        return [
+            {
+                "version_id": r["id"],
+                "version": r["version"],
+                "change": r["change"],
+                "changed_at": r["changed_at"],
+                "memory": json.loads(r["payload"]),
+            }
+            for r in rows
+        ]
+
+    def rollback(self, memory_id: str, version_id: str) -> Memory | None:
+        """Restore a memory's fields from one of its saved versions.
+
+        The pre-rollback state is itself saved to history first (change =
+        ``"rollback"``), so a rollback can be rolled back. Returns the updated
+        memory, or ``None`` if the memory or the version does not exist.
+        """
+        current = self.get(memory_id)
+        if current is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_history WHERE id = ? AND memory_id = ?",
+                (version_id, memory_id),
+            ).fetchone()
+            if row is None:
+                return None
+            snap = json.loads(row["payload"])
+            self._add_history(conn, memory_id, current.to_dict(), change="rollback")
+            conn.execute(
+                "UPDATE memories "
+                "SET content = ?, category = ?, tags = ?, importance = ?, updated_at = ? "
+                "WHERE id = ?",
+                (
+                    snap["content"],
+                    snap.get("category", "general"),
+                    json.dumps(snap.get("tags") or []),
+                    snap.get("importance", 3),
+                    _utcnow(),
+                    memory_id,
+                ),
+            )
+            conn.commit()
+        return self.get(memory_id)
+
+    # -- export / import ------------------------------------------------------ #
+
+    def export_graph(
+        self,
+        *,
+        category: str | None = None,
+        tags: Iterable[str] | None = None,
+        label_length: int = 80,
+    ) -> dict[str, Any]:
+        """Full nodes + links dump for visualization (no truncation).
+
+        Nodes carry ``id``, ``label`` (content clipped to ``label_length``),
+        ``category``, ``importance`` and ``tags``; links carry
+        ``source``/``target``/``relation``/``weight``. Links are kept only when
+        both endpoints survive the optional category/tags filter.
+        """
+        wanted_tags = [t.strip() for t in (tags or []) if t and t.strip()]
+        label_length = max(10, int(label_length))
+        with self._connect() as conn:
+            nodes: list[dict[str, Any]] = []
+            keep: set[str] = set()
+            for r in conn.execute("SELECT * FROM memories").fetchall():
+                mem = _row_to_memory(r)
+                if not self._passes_filters(mem, category, wanted_tags, None):
+                    continue
+                keep.add(mem.id)
+                nodes.append(
+                    {
+                        "id": mem.id,
+                        "label": mem.content[:label_length],
+                        "category": mem.category,
+                        "importance": mem.importance,
+                        "tags": mem.tags,
+                    }
+                )
+            links = [
+                {
+                    "source": l.source_id,
+                    "target": l.target_id,
+                    "relation": l.relation,
+                    "weight": l.weight,
+                }
+                for l in self._all_links(conn)
+                if l.source_id in keep and l.target_id in keep
+            ]
+        return {"nodes": nodes, "links": links}
+
+    def export_data(
+        self,
+        *,
+        category: str | None = None,
+        tags: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        """Dump memories (with their details) + links as a portable payload."""
+        wanted_tags = [t.strip() for t in (tags or []) if t and t.strip()]
+        with self._connect() as conn:
+            memories: list[dict[str, Any]] = []
+            keep: set[str] = set()
+            total_details = 0
+            for r in conn.execute(
+                "SELECT * FROM memories ORDER BY created_at"
+            ).fetchall():
+                mem = _row_to_memory(r)
+                if not self._passes_filters(mem, category, wanted_tags, None):
+                    continue
+                keep.add(mem.id)
+                entry = mem.to_dict()
+                entry["details"] = [
+                    _row_to_detail(d).to_dict()
+                    for d in conn.execute(
+                        "SELECT * FROM memory_details WHERE memory_id = ? "
+                        "ORDER BY created_at",
+                        (mem.id,),
+                    ).fetchall()
+                ]
+                total_details += len(entry["details"])
+                memories.append(entry)
+            links = [
+                l.to_dict()
+                for l in self._all_links(conn)
+                if l.source_id in keep and l.target_id in keep
+            ]
+        return {
+            "format": "brainmemory-export",
+            "format_version": 1,
+            "exported_at": _utcnow(),
+            "counts": {
+                "memories": len(memories),
+                "details": total_details,
+                "links": len(links),
+            },
+            "memories": memories,
+            "links": links,
+        }
+
+    def import_data(
+        self, data: dict[str, Any], *, on_conflict: str = "skip"
+    ) -> dict[str, Any]:
+        """Import a payload produced by :meth:`export_data`.
+
+        Ids and timestamps are preserved. Existing memory ids are skipped by
+        default; with ``on_conflict="overwrite"`` their fields are replaced
+        (the previous state is saved to history first). Details are merged by
+        id; links import only when both endpoints exist. Raises ``ValueError``
+        for a malformed payload.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("memories"), list):
+            raise ValueError(
+                "invalid export payload: expected {'memories': [...], 'links': [...]}"
+            )
+        on_conflict = "overwrite" if str(on_conflict).lower() == "overwrite" else "skip"
+        imported = overwritten = skipped_existing = 0
+        details_imported = 0
+        links_imported = links_skipped = 0
+        errors: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            for idx, m in enumerate(data["memories"]):
+                try:
+                    content = (m or {}).get("content")
+                    if not content or not str(content).strip():
+                        raise ValueError("content is required")
+                    mid = str(m.get("id") or uuid.uuid4().hex)
+                    now = _utcnow()
+                    category = (m.get("category") or "general").strip() or "general"
+                    tags_json = json.dumps(
+                        sorted(
+                            {
+                                str(t).strip()
+                                for t in (m.get("tags") or [])
+                                if str(t).strip()
+                            }
+                        )
+                    )
+                    importance = max(1, min(5, int(m.get("importance", 3))))
+                    exists = conn.execute(
+                        "SELECT 1 FROM memories WHERE id = ?", (mid,)
+                    ).fetchone()
+                    if exists and on_conflict == "skip":
+                        skipped_existing += 1
+                        continue
+                    if exists:
+                        prev = self._get_conn(conn, mid)
+                        if prev is not None:
+                            self._add_history(
+                                conn, mid, prev.to_dict(), change="import-overwrite"
+                            )
+                        conn.execute(
+                            "UPDATE memories SET content = ?, category = ?, tags = ?, "
+                            "importance = ?, updated_at = ? WHERE id = ?",
+                            (
+                                str(content).strip(),
+                                category,
+                                tags_json,
+                                importance,
+                                now,
+                                mid,
+                            ),
+                        )
+                        overwritten += 1
+                    else:
+                        conn.execute(
+                            "INSERT INTO memories "
+                            "(id, content, category, tags, importance, created_at, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                mid,
+                                str(content).strip(),
+                                category,
+                                tags_json,
+                                importance,
+                                m.get("created_at") or now,
+                                m.get("updated_at") or now,
+                            ),
+                        )
+                        imported += 1
+                    for d in m.get("details") or []:
+                        dc = (d or {}).get("content")
+                        if not dc or not str(dc).strip():
+                            continue
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO memory_details "
+                            "(id, memory_id, content, created_at) VALUES (?, ?, ?, ?)",
+                            (
+                                str(d.get("id") or uuid.uuid4().hex),
+                                mid,
+                                str(dc).strip(),
+                                d.get("created_at") or now,
+                            ),
+                        )
+                        details_imported += cur.rowcount
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    errors.append({"index": idx, "error": str(exc)})
+            for l in data.get("links") or []:
+                try:
+                    sid = (l or {}).get("source_id")
+                    tid = (l or {}).get("target_id")
+                    if not sid or not tid or sid == tid:
+                        links_skipped += 1
+                        continue
+                    src_ok = conn.execute(
+                        "SELECT 1 FROM memories WHERE id = ?", (sid,)
+                    ).fetchone()
+                    tgt_ok = conn.execute(
+                        "SELECT 1 FROM memories WHERE id = ?", (tid,)
+                    ).fetchone()
+                    if not src_ok or not tgt_ok:
+                        links_skipped += 1
+                        continue
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO memory_links "
+                        "(id, source_id, target_id, relation, weight, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            str(l.get("id") or uuid.uuid4().hex),
+                            sid,
+                            tid,
+                            (l.get("relation") or DEFAULT_RELATION).strip()
+                            or DEFAULT_RELATION,
+                            float(l.get("weight", 1.0)),
+                            l.get("created_at") or _utcnow(),
+                        ),
+                    )
+                    links_imported += cur.rowcount
+                except (ValueError, TypeError, KeyError, sqlite3.Error):
+                    links_skipped += 1
+            conn.commit()
+        return {
+            "imported": imported,
+            "overwritten": overwritten,
+            "skipped_existing": skipped_existing,
+            "details_imported": details_imported,
+            "links_imported": links_imported,
+            "links_skipped": links_skipped,
+            "errors": errors,
+        }
+
+    def backup_now(self) -> Path:
+        """Snapshot the live DB into ``<data_dir>/backups`` (online backup API)."""
+        return self._backup_db()
 
     # -- details (observations) -------------------------------------------- #
 
@@ -1216,6 +1729,9 @@ class MemoryStore:
             total_links = conn.execute(
                 "SELECT COUNT(*) AS c FROM memory_links"
             ).fetchone()["c"]
+            total_trash = conn.execute(
+                "SELECT COUNT(*) AS c FROM memory_trash"
+            ).fetchone()["c"]
 
             by_category = {
                 row["category"]: row["c"]
@@ -1268,6 +1784,7 @@ class MemoryStore:
             "total": total,
             "total_details": total_details,
             "total_links": total_links,
+            "trash": total_trash,
             "by_category": by_category,
             "top_tags": dict(
                 sorted(all_tags.items(), key=lambda kv: kv[1], reverse=True)[:10]

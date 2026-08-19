@@ -12,44 +12,41 @@ Memory is modelled internally as a small **knowledge graph** (memories =
 nodes, links = directed connections, details = attached facts) so recall can be
 precise and multi-hop — while the tool vocabulary stays "memory"-oriented.
 
-Since v0.9.0 the tool surface is **consolidated**: every operation takes a
-list, so acting on one memory or fifty is the same call. Detail and link
-writes are unified into one mixed-operation batch tool per entity
-(``edit_details`` / ``edit_links``), giving full CRUD over all three entities
-with just 12 tools.
+Since v0.10.0 the tool surface expands to **15 tools** (3 new additions):
+- export_graph_html   : render full graph as standalone 3D interactive HTML
+- restore_memories    : soft-delete safety net (trash, history, rollback, purge)
+- transfer_memories   : export / import memories, details & links in JSON
 
-Cognitive tools (12):
+Cognitive tools (15):
     - store_memories      : persist one or more memories (nodes)
     - recall_memories     : fetch one or more memories by id (+ optional
                             details / connections per memory)
     - search_memory       : ranked search (FTS5/BM25 + graph expansion)
     - list_memories       : list stored memories (most important first)
     - update_memories     : modify one or more memories
-    - forget_memories     : delete one or more memories (details + links cascade)
+    - forget_memories     : soft delete one or more memories (snapshots to trash)
     - edit_details        : add / update / delete attached facts (mixed batch)
     - edit_links          : link / unlink memory connections (mixed batch)
     - recall_related      : multi-hop recall of memories connected to one memory
     - connect_memories    : shortest connection (path) between two memories
     - memory_map          : nodes + links map of the memory graph
     - summarize_memories  : summary statistics over the memory graph
-
-Every list-taking tool processes its items independently and reports a
-per-item ``status`` (never aborting the whole batch on one bad item), plus an
-overall ``count`` and success counter.
+    - export_graph_html   : render full graph as standalone interactive 3D HTML
+    - restore_memories    : manage soft-deleted trash, history & rollback
+    - transfer_memories   : export / import / backup whole knowledge graph
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from .memory import DEFAULT_RELATION, MemoryStore, default_data_dir
 
-# --------------------------------------------------------------------------- #
-# Factory
-# --------------------------------------------------------------------------- #
+_TEMPLATE_PATH = Path(__file__).parent / "templates" / "memory_graph.html"
 
 
 def create_server(
@@ -286,10 +283,11 @@ def create_server(
 
     @mcp.tool()
     def forget_memories(memory_ids: list[str]) -> dict[str, Any]:
-        """Forget (delete) one or more memories by id.
+        """Forget (soft delete) one or more memories by id.
 
-        A single memory is just a list of one id. Each memory's details and
-        any connections to/from it are removed too (cascade).
+        A single memory is just a list of one id. Each memory, its details, and
+        its links are safely snapshotted into the trash (``memory_trash``)
+        before removal, allowing recovery with `restore_memories`.
 
         Args:
             memory_ids: The ids of the memories to delete.
@@ -627,6 +625,253 @@ def create_server(
     def summarize_memories() -> dict[str, Any]:
         """Summarize the brain memory: totals, categories, top tags, connections."""
         return {"status": "ok", "summary": store.stats()}
+
+    # -- new tools (v0.10.0) ------------------------------------------------ #
+
+    @mcp.tool()
+    def export_graph_html(
+        output_path: str = "memory-graph.html",
+        category: str | None = None,
+        tags: list[str] | None = None,
+        label_length: int = 80,
+    ) -> dict[str, Any]:
+        """Render the complete knowledge graph into a 3D interactive HTML file.
+
+        Creates an openable HTML document featuring black/white/aqua theme,
+        three.js + 3d-force-graph visualization, search, category filters, and
+        interactive node panels. Graph data is embedded directly into the file.
+
+        Args:
+            output_path: File path to save the HTML visualization to.
+            category: Optional category filter.
+            tags: Optional tags filter (all must match).
+            label_length: Max characters for node labels in graph.
+
+        Returns:
+            Dict with output_path, total nodes & links exported, and byte size.
+        """
+        import json
+
+        if not _TEMPLATE_PATH.exists():
+            return {
+                "status": "error",
+                "error": f"template file missing at {_TEMPLATE_PATH}",
+            }
+        template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+        graph_data = store.export_graph(
+            category=category, tags=tags, label_length=label_length
+        )
+        json_blob = json.dumps(graph_data, ensure_ascii=False)
+        rendered = template.replace("/*__GRAPH_DATA__*/", json_blob)
+
+        out_file = Path(output_path).resolve()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text(rendered, encoding="utf-8")
+
+        return {
+            "status": "ok",
+            "output_path": str(out_file),
+            "nodes_count": len(graph_data["nodes"]),
+            "links_count": len(graph_data["links"]),
+            "bytes": len(rendered.encode("utf-8")),
+        }
+
+    @mcp.tool()
+    def restore_memories(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Soft delete safety net: manage trashed memories, history & rollback.
+
+        Each item in ``items`` is a dict with an ``op`` field selecting the
+        action:
+
+        - ``{"op": "list_trash", "limit": 50}`` — list trashed (forgotten)
+          memories.
+        - ``{"op": "restore", "memory_id": <id>}`` — bring a trashed memory
+          back, including its details and valid connections.
+        - ``{"op": "purge_trash", "memory_ids": [<id>...], "older_than_days": 30}``
+          — permanently remove entries from the trash (irreversible).
+        - ``{"op": "history", "memory_id": <id>, "limit": 20}`` — view past
+          versions of a memory.
+        - ``{"op": "rollback", "memory_id": <id>, "version_id": <ver_id>}`` —
+          revert a memory to a historical version.
+
+        Args:
+            items: List of mixed operations (see shapes above).
+
+        Returns:
+            ``results`` list with per-item status and results.
+        """
+        results: list[dict[str, Any]] = []
+        applied = 0
+        for idx, item in enumerate(items):
+            op = str((item or {}).get("op", "")).strip().lower()
+            if op == "list_trash":
+                limit = item.get("limit", 50)
+                trash = store.list_trash(limit=limit)
+                results.append(
+                    {
+                        "index": idx,
+                        "op": "list_trash",
+                        "status": "ok",
+                        "count": len(trash),
+                        "trash": trash,
+                    }
+                )
+                applied += 1
+            elif op == "restore":
+                mid = item.get("memory_id")
+                if not mid:
+                    results.append(
+                        {
+                            "index": idx,
+                            "op": "restore",
+                            "status": "error",
+                            "error": "memory_id is required",
+                        }
+                    )
+                    continue
+                res = store.restore(mid)
+                if res is None:
+                    results.append(
+                        {
+                            "index": idx,
+                            "op": "restore",
+                            "memory_id": mid,
+                            "status": "not_found",
+                        }
+                    )
+                    continue
+                results.append(
+                    {"index": idx, "op": "restore", "memory_id": mid, **res}
+                )
+                if res.get("status") == "restored":
+                    applied += 1
+            elif op == "purge_trash":
+                mids = item.get("memory_ids")
+                older_than = item.get("older_than_days")
+                purged = store.purge_trash(
+                    memory_ids=mids, older_than_days=older_than
+                )
+                results.append(
+                    {
+                        "index": idx,
+                        "op": "purge_trash",
+                        "status": "ok",
+                        "purged": purged,
+                    }
+                )
+                applied += 1
+            elif op == "history":
+                mid = item.get("memory_id")
+                if not mid:
+                    results.append(
+                        {
+                            "index": idx,
+                            "op": "history",
+                            "status": "error",
+                            "error": "memory_id is required",
+                        }
+                    )
+                    continue
+                hist = store.history_of(mid, limit=item.get("limit", 20))
+                results.append(
+                    {
+                        "index": idx,
+                        "op": "history",
+                        "memory_id": mid,
+                        "status": "ok",
+                        "count": len(hist),
+                        "history": hist,
+                    }
+                )
+                applied += 1
+            elif op == "rollback":
+                mid = item.get("memory_id")
+                vid = item.get("version_id")
+                if not mid or not vid:
+                    results.append(
+                        {
+                            "index": idx,
+                            "op": "rollback",
+                            "status": "error",
+                            "error": "memory_id and version_id are required",
+                        }
+                    )
+                    continue
+                mem = store.rollback(mid, vid)
+                if mem is None:
+                    results.append(
+                        {
+                            "index": idx,
+                            "op": "rollback",
+                            "memory_id": mid,
+                            "version_id": vid,
+                            "status": "not_found",
+                        }
+                    )
+                    continue
+                results.append(
+                    {
+                        "index": idx,
+                        "op": "rollback",
+                        "memory_id": mid,
+                        "status": "rolled_back",
+                        "memory": mem.to_dict(),
+                    }
+                )
+                applied += 1
+            else:
+                results.append(
+                    {
+                        "index": idx,
+                        "status": "error",
+                        "error": "op must be one of: list_trash, restore, purge_trash, history, rollback",
+                    }
+                )
+        return {"status": "ok", "count": len(items), "applied": applied, "results": results}
+
+    @mcp.tool()
+    def transfer_memories(
+        op: str,
+        data: dict[str, Any] | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        on_conflict: str = "skip",
+    ) -> dict[str, Any]:
+        """Export, import, or create an instant backup of the knowledge graph.
+
+        Args:
+            op: Operation to perform: "export" | "import" | "backup".
+            data: Payload dictionary for "import" (produced by "export").
+            category: Optional category filter for "export".
+            tags: Optional tags filter for "export".
+            on_conflict: Conflict handling for "import": "skip" (default) or "overwrite".
+
+        Returns:
+            Dict containing export payload, import counts, or backup path.
+        """
+        op_norm = str(op or "").strip().lower()
+        if op_norm == "export":
+            payload = store.export_data(category=category, tags=tags)
+            return {"status": "ok", "op": "export", **payload}
+        elif op_norm == "import":
+            if not data:
+                return {
+                    "status": "error",
+                    "error": "data dictionary is required for import",
+                }
+            try:
+                summary = store.import_data(data, on_conflict=on_conflict)
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+            return {"status": "ok", "op": "import", **summary}
+        elif op_norm == "backup":
+            path = store.backup_now()
+            return {"status": "ok", "op": "backup", "backup_path": str(path)}
+        else:
+            return {
+                "status": "error",
+                "error": "op must be one of: export, import, backup",
+            }
 
     # ------------------------------------------------------------- resources #
 

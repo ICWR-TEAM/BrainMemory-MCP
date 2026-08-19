@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>BrainMemory MCP — 3D Knowledge Graph</title>
+<style>
+  :root {
+    --aqua: #00eaff;
+    --aqua-dim: rgba(0,234,255,0.32);
+    --aqua-glow: rgba(0,234,255,0.16);
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; background: #000000;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  }
+  #graph { width: 100vw; height: 100vh; }
+
+  .hud {
+    background: #000000;
+    border: 1px solid var(--aqua);
+    box-shadow: 0 0 0 1px #000000, 0 0 20px var(--aqua-glow);
+    animation: fadeIn 0.5s var(--ease) both;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+  #panel {
+    position: absolute; top: clamp(8px, 2vw, 16px); left: clamp(8px, 2vw, 16px); z-index: 10;
+    color: #ffffff; padding: clamp(10px, 1.6vw, 16px) clamp(12px, 2vw, 20px);
+    max-width: min(88vw, 320px);
+  }
+  #panel h1 {
+    font-size: clamp(11px, 1.4vw, 14px); margin: 0 0 4px; color: var(--aqua);
+    letter-spacing: 1.5px; font-weight: 600; text-transform: uppercase;
+  }
+  #panel .byline {
+    font-size: clamp(8px, 0.9vw, 10px); margin: 0 0 8px; color: rgba(0,234,255,0.55);
+    letter-spacing: 0.6px; border-bottom: 1px solid var(--aqua-dim); padding-bottom: 6px;
+  }
+  #panel p { font-size: clamp(10px, 1.1vw, 12px); margin: 3px 0; color: #8a8a8a; letter-spacing: 0.3px; }
+  #panel .stat { color: #ffffff; font-weight: 600; }
+
+  #search {
+    width: 100%; margin-top: 10px; padding: 7px 10px;
+    border: 1px solid var(--aqua-dim); background: #000000; color: #ffffff;
+    font-size: clamp(10px, 1.1vw, 12px); font-family: inherit;
+    transition: border-color 0.25s var(--ease), box-shadow 0.25s var(--ease);
+  }
+  #search::placeholder { color: #555555; }
+  #search:focus { outline: none; border-color: var(--aqua); box-shadow: 0 0 10px var(--aqua-glow); }
+
+  #resetBtn {
+    width: 100%; margin-top: 8px; padding: 7px 10px;
+    background: #000000; border: 1px solid var(--aqua-dim); color: var(--aqua);
+    font-family: inherit; font-size: clamp(10px, 1.1vw, 12px); letter-spacing: 1px;
+    text-transform: uppercase; cursor: pointer;
+    transition: border-color 0.25s var(--ease), box-shadow 0.25s var(--ease), color 0.25s var(--ease), transform 0.15s var(--ease);
+  }
+  #resetBtn:hover { border-color: var(--aqua); color: #ffffff; box-shadow: 0 0 10px var(--aqua-glow); }
+  #resetBtn:active { transform: scale(0.97); }
+
+  #legend {
+    position: absolute; bottom: clamp(8px, 2vw, 16px); left: clamp(8px, 2vw, 16px); z-index: 10;
+    color: #bbbbbb; padding: clamp(8px, 1.4vw, 12px) clamp(10px, 1.6vw, 14px);
+    font-size: clamp(9px, 1vw, 11px); max-height: 38vh; overflow-y: auto;
+    max-width: min(70vw, 240px);
+  }
+  #legend b { color: var(--aqua); font-size: clamp(10px, 1.1vw, 12px); text-transform: uppercase; letter-spacing: 1.5px; }
+  #legend div { display: flex; align-items: center; margin: 4px 0; cursor: pointer; transition: color 0.2s var(--ease), transform 0.2s var(--ease); }
+  #legend div:hover { color: var(--aqua); transform: translateX(2px); }
+  #legend .dot {
+    width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.25); transition: box-shadow 0.2s var(--ease);
+  }
+  #legend div:hover .dot { box-shadow: 0 0 6px currentColor; }
+
+  #info {
+    position: absolute; top: clamp(8px, 2vw, 16px); right: clamp(8px, 2vw, 16px); z-index: 10;
+    color: #ffffff; padding: clamp(12px, 2vw, 20px) clamp(14px, 2.2vw, 22px);
+    max-width: min(90vw, 380px); display: none;
+    font-size: clamp(10px, 1.1vw, 12px); line-height: 1.6; max-height: 78vh; overflow-y: auto;
+  }
+  #info h2 { font-size: clamp(11px, 1.3vw, 13px); margin: 0 0 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  #info .badge {
+    display:inline-block; border: 1px solid #666666; color:#ffffff; padding:2px 9px;
+    font-size:10px; margin-right:6px; margin-bottom: 4px; letter-spacing: 0.5px;
+  }
+  #info .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: #777777; font-size: 15px; transition: color 0.2s var(--ease), transform 0.2s var(--ease); }
+  #info .close:hover { color: var(--aqua); transform: rotate(90deg); }
+  #info .label-text { color: #999999; }
+  #info .id-text { color: #4a4a4a; font-size: 10px; margin-top: 8px; letter-spacing: 0.3px; }
+
+  #hint {
+    position:absolute; bottom: clamp(8px, 2vw, 16px); right: clamp(8px, 2vw, 16px); z-index:10;
+    color: rgba(0,234,255,0.5); font-size: clamp(9px, 1vw, 11px); letter-spacing: 0.6px;
+  }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--aqua-dim); border-radius: 3px; }
+
+  @media (max-width: 640px) {
+    #legend { max-height: 26vh; }
+    #info { max-width: 92vw; }
+    #hint { display: none; }
+    #panel { max-width: 78vw; }
+  }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+
+<div id="panel" class="hud">
+  <h1>BrainMemory MCP — 3D Knowledge Graph</h1>
+  <p class="byline">By HarshXor - R&amp;D incrustwerush.org</p>
+  <p>Total memories: <span class="stat" id="statNodes">0</span></p>
+  <p>Total connections: <span class="stat" id="statLinks">0</span></p>
+  <p>Categories: <span class="stat" id="statCats">0</span></p>
+  <input id="search" type="text" placeholder="Search memories... (highlights matching nodes)" />
+  <button id="resetBtn" type="button">⟲ Reset View</button>
+</div>
+
+<div id="legend" class="hud"><b>Categories</b></div>
+
+<div id="info" class="hud">
+  <span class="close" onclick="document.getElementById('info').style.display='none'">✕</span>
+  <div id="infoBody"></div>
+</div>
+
+<div id="hint">drag: rotate · scroll: zoom · click node: details · ⟲: reset view</div>
+
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<script src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
+<script>
+const GRAPH_DATA = /*__GRAPH_DATA__*/;
+
+const categories = [...new Set(GRAPH_DATA.nodes.map(n => n.category))].sort();
+const palette = [
+  '#4fd1c5','#f6ad55','#fc8181','#63b3ed','#b794f4','#f687b3','#68d391',
+  '#faf089','#a0aec0','#ed8936','#38b2ac','#9f7aea','#f56565','#48bb78',
+  '#4299e1','#ed64a6','#ecc94b','#718096','#e53e3e','#805ad5','#319795',
+  '#dd6b20','#38a169','#3182ce','#d53f8c','#d69e2e','#cbd5e0','#2c7a7b',
+  '#6b46c1','#c53030','#276749','#2b6cb0','#97266d'
+];
+const colorOf = {};
+categories.forEach((c,i) => colorOf[c] = palette[i % palette.length]);
+
+const nodeById = {};
+GRAPH_DATA.nodes.forEach(n => {
+  let tags = [];
+  try { tags = Array.isArray(n.tags) ? n.tags : JSON.parse(n.tags || '[]'); } catch(e) {}
+  n.tags = tags;
+  n.val = 1 + (n.importance || 3) * 1.3;
+  n.color = colorOf[n.category] || '#888';
+  nodeById[n.id] = n;
+});
+const links = GRAPH_DATA.links.filter(l => nodeById[l.source] && nodeById[l.target]);
+
+document.getElementById('statNodes').textContent = GRAPH_DATA.nodes.length;
+document.getElementById('statLinks').textContent = links.length;
+document.getElementById('statCats').textContent = categories.length;
+
+const legendEl = document.getElementById('legend');
+categories.forEach(c => {
+  const row = document.createElement('div');
+  row.style.color = colorOf[c];
+  row.innerHTML = `<span class="dot" style="background:${colorOf[c]}"></span>${c}`;
+  row.onclick = () => filterCategory(c);
+  legendEl.appendChild(row);
+});
+
+let activeFilter = null;
+function filterCategory(cat) {
+  activeFilter = (activeFilter === cat) ? null : cat;
+  Graph.nodeColor(n => activeFilter && n.category !== activeFilter ? 'rgba(60,60,60,0.15)' : n.color);
+  Graph.linkColor(l => {
+    if (!activeFilter) return '#ffffff';
+    const s = nodeById[l.source.id || l.source], t = nodeById[l.target.id || l.target];
+    return (s.category === activeFilter || t.category === activeFilter) ? '#ffffff' : 'rgba(40,40,40,0.04)';
+  });
+}
+
+// ---- graph: precise, smooth, futuristic rendering ----
+const Graph = ForceGraph3D({ rendererConfig: { antialias: true, alpha: false, powerPreference: 'high-performance' } })
+  (document.getElementById('graph'))
+  .graphData({ nodes: GRAPH_DATA.nodes, links })
+  .backgroundColor('#000000')
+  .nodeLabel(n => `<div style="max-width:280px;font-size:12px;line-height:1.4;color:#fff;background:#000;padding:6px 10px;border:1px solid #00eaff;font-family:monospace;">
+      <b style="color:${n.color}">[${n.category}]</b><br/>${n.label}...
+    </div>`)
+  .nodeColor(n => n.color)
+  .nodeVal('val')
+  .nodeOpacity(0.95)
+  .nodeResolution(16)
+  .linkColor(() => '#ffffff')
+  .linkWidth(l => Math.max(0.28, (l.weight || 1) * 0.32))
+  .linkOpacity(0.45)
+  .linkDirectionalParticles(l => l.relation === 'part_of' || l.relation === 'next_section' ? 2 : 0)
+  .linkDirectionalParticleWidth(1.6)
+  .linkDirectionalParticleSpeed(0.006)
+  .linkDirectionalParticleColor(() => '#00eaff')
+  .onNodeClick(showInfo)
+  .onNodeHover(n => document.getElementById('graph').style.cursor = n ? 'pointer' : null)
+  .nodeThreeObjectExtend(false);
+
+Graph.d3Force('charge').strength(-90);
+
+// smooth, precise camera controls (inertia damping)
+const controls = Graph.controls();
+if (controls) {
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.55;
+  controls.zoomSpeed = 0.7;
+}
+
+// true responsiveness: keep canvas + camera aspect in sync with viewport
+window.addEventListener('resize', () => {
+  Graph.width(window.innerWidth).height(window.innerHeight);
+});
+
+function showInfo(n) {
+  if (!n) return;
+  const info = document.getElementById('info');
+  const body = document.getElementById('infoBody');
+  body.innerHTML = `
+    <h2 style="color:${n.color}">${n.label}...</h2>
+    <span class="badge" style="border-color:${n.color};color:${n.color}">${n.category}</span>
+    <span class="badge">importance: ${n.importance}</span>
+    <p class="label-text" style="margin-top:8px;">Tags: ${n.tags.join(', ') || '—'}</p>
+    <p class="id-text">id: ${n.id}</p>
+  `;
+  info.style.display = 'block';
+  Graph.cameraPosition(
+    { x: n.x*1.4, y: n.y*1.4, z: n.z*1.4 },
+    n,
+    900
+  );
+}
+
+document.getElementById('search').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) {
+    Graph.nodeColor(n => activeFilter && n.category !== activeFilter ? 'rgba(60,60,60,0.15)' : n.color);
+    return;
+  }
+  Graph.nodeColor(n => {
+    const hay = (n.label + ' ' + n.tags.join(' ') + ' ' + n.category).toLowerCase();
+    return hay.includes(q) ? '#00eaff' : 'rgba(50,50,50,0.1)';
+  });
+});
+
+// reset / center view: clears search + category filter, closes detail panel,
+// and smoothly re-fits the camera to frame the whole graph
+document.getElementById('resetBtn').addEventListener('click', () => {
+  document.getElementById('search').value = '';
+  activeFilter = null;
+  Graph.nodeColor(n => n.color);
+  Graph.linkColor(() => '#ffffff');
+  document.getElementById('info').style.display = 'none';
+  Graph.zoomToFit(800, 60);
+});
+</script>
+</body>
+</html>
