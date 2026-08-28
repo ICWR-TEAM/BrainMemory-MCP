@@ -51,7 +51,7 @@ three entities** with 15 tools.
 | `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
 | `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file at an absolute `output_path`. |
 | `restore_memories` | Soft-delete trash, history, rollback, and trash purge management. |
-| `transfer_memories` | Export/import migration JSON files using absolute `output_path` / `input_path`. |
+| `transfer_memories` | Download/upload migration JSON inline across MCP servers, with optional absolute file paths. |
 
 Every list-taking tool processes items independently and reports a per-item
 `status` — one bad item never aborts the batch.
@@ -59,12 +59,23 @@ Every list-taking tool processes items independently and reports a per-item
 ### File export and migration
 
 File operations are exposed through the same MCP tool registry in both stdio
-and HTTP/SSE modes. `export_graph_html` now takes one `output_path`, which must
-be the absolute destination HTML path. `transfer_memories(op="export")` writes
-a portable JSON migration file to an absolute `output_path`, while
-`transfer_memories(op="import")` reads it from an absolute `input_path`.
-Relative paths (including `./file` and `../file`) and explicit `.` / `..` path
-segments are rejected. Parent directories are created for exports.
+and HTTP/SSE modes. `export_graph_html` takes an absolute `output_path`.
+
+For migration between machines, `transfer_memories(op="export")` returns the
+portable migration object in its `data` field (download), and
+`transfer_memories(op="import", data=...)` accepts that object directly
+(upload). This avoids incorrectly asking a remote HTTP server to read a path
+from the client's filesystem:
+
+```json
+{"op": "export"}
+{"op": "import", "data": {"format": "brainmemory-export", "format_version": 1, "memories": []}, "on_conflict": "overwrite"}
+```
+
+Server-local file workflows remain supported by supplying an absolute
+`output_path` on export or an absolute `input_path` on import. Relative paths
+(including `./file` and `../file`) and explicit `.` / `..` path segments are
+rejected. Parent directories are created for file exports.
 
 ```json
 {"output_path": "/absolute/workspace/memory-graph.html"}

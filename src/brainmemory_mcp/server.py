@@ -33,7 +33,7 @@ Cognitive tools (15):
     - summarize_memories  : summary statistics over the memory graph
     - export_graph_html   : render full graph as standalone interactive 3D HTML
     - restore_memories    : manage soft-deleted trash, history & rollback
-    - transfer_memories   : file-based export / import + database backup
+    - transfer_memories   : inline upload/download, file migration + backup
 """
 
 from __future__ import annotations
@@ -867,59 +867,72 @@ def create_server(
     @mcp.tool()
     def transfer_memories(
         op: str,
+        data: dict[str, Any] | None = None,
         input_path: str | None = None,
         output_path: str | None = None,
         category: str | None = None,
         tags: list[str] | None = None,
         on_conflict: str = "skip",
     ) -> dict[str, Any]:
-        """Export/import migration files or create an instant database backup.
+        """Upload/download graph data or use server-local migration files.
 
-        This MCP tool has the same behavior over stdio and HTTP/SSE.
+        Inline ``data`` is transport-safe: an export can be downloaded in the
+        MCP result and passed directly to an HTTP/SSE server for import. Paths
+        remain available for same-host workflows and database backups.
 
         Args:
             op: Operation to perform: ``export``, ``import``, or ``backup``.
-            input_path: Absolute JSON file path required for import.
-            output_path: Absolute JSON file path required for export.
+            data: Migration object uploaded directly for import.
+            input_path: Optional server-local absolute JSON path for import.
+            output_path: Optional server-local absolute JSON path for export.
             category: Optional category filter for export.
-            tags: Optional tags filter for export.
+            tags: Optional tags filter for export (all must match).
             on_conflict: Import handling: ``skip`` (default) or ``overwrite``.
         """
         import json
 
         op_norm = str(op or "").strip().lower()
         if op_norm == "export":
-            try:
-                target = require_absolute_file_path(
-                    output_path or "", parameter="output_path"
-                )
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
             payload = store.export_data(category=category, tags=tags)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            return {
+            result: dict[str, Any] = {
                 "status": "ok",
                 "op": "export",
-                "output_path": str(target),
-                "bytes": target.stat().st_size,
                 "counts": payload["counts"],
+                "data": payload,
             }
+            if output_path:
+                try:
+                    target = require_absolute_file_path(output_path, parameter="output_path")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                except (ValueError, OSError) as exc:
+                    return {"status": "error", "error": str(exc)}
+                result.update(output_path=str(target), bytes=target.stat().st_size)
+            return result
         if op_norm == "import":
+            if data is not None and input_path:
+                return {
+                    "status": "error",
+                    "error": "provide either data or input_path, not both",
+                }
+            source: Path | None = None
             try:
-                source = require_absolute_file_path(input_path or "", parameter="input_path")
-                data = json.loads(source.read_text(encoding="utf-8"))
+                if data is None:
+                    source = require_absolute_file_path(
+                        input_path or "", parameter="input_path or data"
+                    )
+                    data = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise TypeError("data must be a migration JSON object")
                 summary = store.import_data(data, on_conflict=on_conflict)
-            except (ValueError, OSError, json.JSONDecodeError) as exc:
+            except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
                 return {"status": "error", "error": str(exc)}
-            return {
-                "status": "ok",
-                "op": "import",
-                "input_path": str(source),
-                **summary,
-            }
+            result = {"status": "ok", "op": "import", "source": "upload", **summary}
+            if source is not None:
+                result.update(source="file", input_path=str(source))
+            return result
         if op_norm == "backup":
             path = store.backup_now()
             return {"status": "ok", "op": "backup", "backup_path": str(path)}
