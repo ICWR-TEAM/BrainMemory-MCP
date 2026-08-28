@@ -165,7 +165,21 @@ brainmemory-mcp --web
 
 # Custom host/port and memory location
 brainmemory-mcp --web --host 0.0.0.0 --port 9000 --data-dir /path/to/memory
+
+# Optional Bearer authorization (prefer the env var to avoid shell history)
+BRAINMEMORY_KEY='replace-with-a-strong-secret' brainmemory-mcp --web
+# Equivalent CLI form: brainmemory-mcp --web --key 'replace-with-a-strong-secret'
 ```
+
+When `--key` or `BRAINMEMORY_KEY` is set, every web request must include:
+
+```http
+Authorization: Bearer replace-with-a-strong-secret
+```
+
+This protects both endpoints. Without a key, web mode remains unauthenticated
+for backward compatibility. Use HTTPS through a reverse proxy when exposing the
+server over a network; a Bearer key sent over plain HTTP is not encrypted.
 
 Endpoints once running in web mode:
 
@@ -179,6 +193,7 @@ Endpoints once running in web mode:
 | `--web` | `BRAINMEMORY_WEB` | `false` (stdio) |
 | `--host` | `BRAINMEMORY_HOST` | `127.0.0.1` |
 | `--port` | `BRAINMEMORY_PORT` | `8765` |
+| `--key` | `BRAINMEMORY_KEY` | unset (authorization disabled) |
 | `--data-dir` | `BRAINMEMORY_HOME` | `~/.brainmemory-mcp` |
 
 ## Connect a client
@@ -210,7 +225,10 @@ endpoint:
 {
   "mcpServers": {
     "brainmemory": {
-      "url": "http://127.0.0.1:8765/sse"
+      "url": "http://127.0.0.1:8765/sse",
+      "headers": {
+        "Authorization": "Bearer replace-with-a-strong-secret"
+      }
     }
   }
 }

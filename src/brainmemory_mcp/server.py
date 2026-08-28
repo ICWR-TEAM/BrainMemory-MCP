@@ -38,6 +38,7 @@ Cognitive tools (15):
 
 from __future__ import annotations
 
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,49 @@ from mcp.server.fastmcp import FastMCP
 from .memory import DEFAULT_RELATION, MemoryStore, default_data_dir
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "memory_graph.html"
+
+
+class BearerKeyMiddleware:
+    """Require a configured Bearer key for every request to an ASGI app."""
+
+    def __init__(self, app: Any, key: str) -> None:
+        self.app = app
+        self.key = key
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        authorization = headers.get(b"authorization", b"").decode("latin-1")
+        scheme, separator, supplied_key = authorization.partition(" ")
+        authorized = (
+            separator == " "
+            and scheme.lower() == "bearer"
+            and secrets.compare_digest(supplied_key, self.key)
+        )
+        if authorized:
+            await self.app(scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+
+        body = b'{"error":"unauthorized"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    (b"www-authenticate", b"Bearer"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 def create_server(
@@ -102,9 +146,7 @@ def create_server(
         for idx, item in enumerate(items):
             content = (item or {}).get("content")
             if not content or not str(content).strip():
-                results.append(
-                    {"index": idx, "status": "error", "error": "content is required"}
-                )
+                results.append({"index": idx, "status": "error", "error": "content is required"})
                 continue
             try:
                 mem = store.store(
@@ -254,9 +296,7 @@ def create_server(
         for idx, item in enumerate(updates):
             memory_id = (item or {}).get("memory_id")
             if not memory_id:
-                results.append(
-                    {"index": idx, "status": "error", "error": "memory_id is required"}
-                )
+                results.append({"index": idx, "status": "error", "error": "memory_id is required"})
                 continue
             mem = store.update(
                 memory_id,
@@ -266,9 +306,7 @@ def create_server(
                 importance=item.get("importance"),
             )
             if mem is None:
-                results.append(
-                    {"index": idx, "memory_id": memory_id, "status": "not_found"}
-                )
+                results.append({"index": idx, "memory_id": memory_id, "status": "not_found"})
                 continue
             results.append(
                 {
@@ -300,9 +338,7 @@ def create_server(
         removed = 0
         for memory_id in memory_ids:
             ok = store.forget(memory_id)
-            results.append(
-                {"memory_id": memory_id, "status": "forgotten" if ok else "not_found"}
-            )
+            results.append({"memory_id": memory_id, "status": "forgotten" if ok else "not_found"})
             if ok:
                 removed += 1
         return {
@@ -576,9 +612,7 @@ def create_server(
             relation: Only traverse connections of this relation type (optional).
             limit: Maximum number of related memories to return (default 50).
         """
-        result = store.recall_related(
-            memory_id, depth=depth, relation=relation, limit=limit
-        )
+        result = store.recall_related(memory_id, depth=depth, relation=relation, limit=limit)
         if result is None:
             return {"status": "not_found", "memory_id": memory_id}
         return {"status": "ok", **result}
@@ -662,9 +696,7 @@ def create_server(
                 "error": f"template file missing at {_TEMPLATE_PATH}",
             }
         template = _TEMPLATE_PATH.read_text(encoding="utf-8")
-        graph_data = store.export_graph(
-            category=category, tags=tags, label_length=label_length
-        )
+        graph_data = store.export_graph(category=category, tags=tags, label_length=label_length)
         json_blob = json.dumps(graph_data, ensure_ascii=False)
         rendered = template.replace("/*__GRAPH_DATA__*/", json_blob)
 
@@ -759,17 +791,13 @@ def create_server(
                         }
                     )
                     continue
-                results.append(
-                    {"index": idx, "op": "restore", "memory_id": mid, **res}
-                )
+                results.append({"index": idx, "op": "restore", "memory_id": mid, **res})
                 if res.get("status") == "restored":
                     applied += 1
             elif op == "purge_trash":
                 mids = item.get("memory_ids")
                 older_than = item.get("older_than_days")
-                purged = store.purge_trash(
-                    memory_ids=mids, older_than_days=older_than
-                )
+                purged = store.purge_trash(memory_ids=mids, older_than_days=older_than)
                 results.append(
                     {
                         "index": idx,
@@ -917,6 +945,7 @@ def run(
     host: str = "127.0.0.1",
     port: int = 8765,
     data_dir: str | None = None,
+    key: str | None = None,
 ) -> None:
     """Create the server and run it.
 
@@ -927,24 +956,32 @@ def run(
         host: Interface to bind in web mode.
         port: TCP port to listen on in web mode.
         data_dir: Directory to persist memories in.
+        key: Optional Bearer key required by every request in web mode.
     """
     server = create_server(host=host, port=port, data_dir=data_dir)
     resolved_dir = data_dir or str(default_data_dir())
 
     if web:
         # Web (SSE) mode: it is safe to log to stdout.
+        auth_status = "Bearer key required" if key else "disabled"
         print(
             f"BrainMemory-MCP (SSE) listening on http://{host}:{port}/sse\n"
             f"  message endpoint : http://{host}:{port}/messages/\n"
+            f"  authorization    : {auth_status}\n"
             f"  memory directory : {resolved_dir}",
             flush=True,
         )
-        server.run(transport="sse")
+        if key:
+            import uvicorn
+
+            app = BearerKeyMiddleware(server.sse_app(), key)
+            uvicorn.run(app, host=host, port=port, log_level="info")
+        else:
+            server.run(transport="sse")
     else:
         # stdio mode: stdout is reserved for the MCP protocol, so log to stderr.
         print(
-            f"BrainMemory-MCP (stdio) ready.\n"
-            f"  memory directory : {resolved_dir}",
+            f"BrainMemory-MCP (stdio) ready.\n" f"  memory directory : {resolved_dir}",
             file=sys.stderr,
             flush=True,
         )

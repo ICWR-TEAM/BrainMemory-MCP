@@ -35,7 +35,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.5.0", "black>=24.0.0"]
+dev = ["ruff>=0.5.0", "black>=24.0.0", "pytest>=8.0.0"]
 build = ["build>=1.2.0", "twine>=5.0.0"]
 
 [project.scripts]

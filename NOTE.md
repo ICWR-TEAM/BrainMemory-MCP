@@ -3,9 +3,9 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-08-19
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.0)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled absolute output directory, and full graph data transfer/backup.
+Last Update Project: 2026-08-20
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.1)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled absolute output directory, and full graph data transfer/backup.
 
 ---
 
@@ -63,6 +63,8 @@ Scope (initial intent):
 > Released v0.10.0.
 >
 > Status update (2026-08-19): Release v0.11.0 refreshed the README, kept the 15-tool surface, and bumped the package version.
+>
+> Status update (2026-08-20): Release v0.11.1 adds optional Bearer-key authorization for HTTP/SSE mode through `--key` or `BRAINMEMORY_KEY`. When configured, both `/sse` and `/messages/` require `Authorization: Bearer <key>`; omitted keys preserve backward-compatible unauthenticated web mode.
 
 ## Mandatory Workflow
 

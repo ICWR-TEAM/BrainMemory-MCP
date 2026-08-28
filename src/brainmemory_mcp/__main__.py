@@ -10,6 +10,15 @@ Two run modes are supported:
 
     # web (HTTP + SSE) — for remote / networked MCP clients
     brainmemory-mcp --web --host 0.0.0.0 --port 8765
+
+    # optionally require Authorization: Bearer <key> on web endpoints
+    brainmemory-mcp --web --key "replace-with-a-strong-secret"
+
+The key may also be supplied through BRAINMEMORY_KEY to avoid command history.
+Never commit keys to source control.
+
+Assumption: ``--key`` uses standard Bearer authentication and protects every
+request handled by the web application, including both /sse and /messages/.
 """
 
 from __future__ import annotations
@@ -56,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP port to listen on in --web mode (default: 8765).",
     )
     parser.add_argument(
+        "--key",
+        default=os.environ.get("BRAINMEMORY_KEY"),
+        help=(
+            "Optional Bearer key required by all --web requests. Clients must send "
+            "'Authorization: Bearer <key>'. Can also be set with BRAINMEMORY_KEY."
+        ),
+    )
+    parser.add_argument(
         "--data-dir",
         default=None,
         help=(
@@ -79,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             data_dir=args.data_dir,
+            key=args.key,
         )
     except KeyboardInterrupt:  # pragma: no cover - interactive shutdown
         print("\nBrainMemory-MCP stopped.", flush=True)
