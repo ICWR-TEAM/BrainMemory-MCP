@@ -102,6 +102,44 @@ def test_export_pagination_requires_scope_memories_or_links(tmp_path: Path):
     assert "scope" in result["error"]
 
 
+def test_trash_can_be_transferred_exactly_and_paged(tmp_path: Path):
+    source = create_server(data_dir=str(tmp_path / "source"))
+    stored = source._tool_manager._tools["store_memories"].fn(
+        [{"content": f"trashed {i}"} for i in range(3)]
+    )
+    ids = [item["memory"]["id"] for item in stored["results"]]
+    source._tool_manager._tools["forget_memories"].fn(ids)
+    transfer = source._tool_manager._tools["transfer_memories"].fn
+
+    first = transfer(op="export", scope="trash", limit=2)
+    assert first["counts"]["trash"] == 2
+    assert first["has_more"] is True
+    second = transfer(op="export", scope="trash", limit=2, cursor=first["next_cursor"])
+    assert second["counts"]["trash"] == 1
+    assert second["has_more"] is False
+
+    destination = create_server(data_dir=str(tmp_path / "destination"))
+    import_fn = destination._tool_manager._tools["transfer_memories"].fn
+    for page in (first, second):
+        result = import_fn(op="import", data=page["data"])
+        assert result["status"] == "ok"
+    listed = destination._tool_manager._tools["restore_memories"].fn(
+        [{"op": "list_trash", "limit": 10}]
+    )
+    destination_rows = listed["results"][0]["trash"]
+    assert {item["id"] for item in destination_rows} == set(ids)
+    source_rows = {
+        item["id"]: item
+        for item in source._tool_manager._tools["restore_memories"].fn(
+            [{"op": "list_trash", "limit": 10}]
+        )["results"][0]["trash"]
+    }
+    assert {item["id"]: item for item in destination_rows} == source_rows
+
+    duplicate = import_fn(op="import", data=first["data"])
+    assert duplicate["skipped_existing"] == 2
+
+
 def test_export_cursor_is_plain_ascii_and_safely_round_trips(tmp_path: Path):
     # Regression test: an earlier revision embedded a raw \x1f control byte in
     # the cursor, which was awkward to round-trip once it passed through

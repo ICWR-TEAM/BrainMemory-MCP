@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-28
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.8)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload (now with keyset `limit`/`cursor`/`scope` pagination for large graphs) plus optional server-local files over stdio and HTTP/SSE.
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.9)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload with keyset `limit`/`cursor`/`scope` pagination for large active graphs and exact trash snapshots, plus optional server-local files over stdio and HTTP/SSE.
 
 ---
 
@@ -70,6 +70,7 @@ Scope (initial intent):
 > Status update (2026-08-28): Release v0.11.3 fixes cross-machine migration: export returns a downloadable inline `data` object and import accepts that object as an upload. Optional absolute paths remain supported for server-local workflows, so HTTP clients no longer need a shared filesystem with the server.
 > Status update (2026-08-28): Release v0.11.7 adds keyset pagination to `transfer_memories(op="export")` — `scope` (`all`/`memories`/`links`), `limit`, `cursor` — plus `has_more`/`next_cursor`, so a very large memory graph can be migrated between two independent servers (e.g. local stdio <-> remote HTTP/SSE, no shared filesystem) in bounded-size pages instead of one giant inline payload. New `(created_at, id)` indexes keep each page O(limit). `import_data` needed no changes — it already tolerates partial payloads and skips links with missing endpoints, which is exactly what makes the "page all memories, then page all links" migration flow safe. `scope="all"` without `limit` is unchanged (full one-shot export/import, same as pre-0.11.7).
 > Status update (2026-08-28): Release v0.11.8 fixes a real bug found while live-testing a local(stdio)->online(HTTP) migration with real production data: the v0.11.7 `next_cursor` embedded a raw `\x1f` control byte, which round-tripped unreliably through hand/tool-call relaying. Cursor is now base64url-encoded plain ASCII text. Also confirmed empirically during that test: a 100-row page can still exceed a calling agent's tool-result size limit when memories contain large content (e.g. full book-text sections) — callers migrating such graphs should pick a smaller `limit` (start around 15-25) rather than assuming row-count alone bounds payload size.
+> Status update (2026-08-28): Release v0.11.9 extends `transfer_memories` pagination to soft-deleted memories: new `scope="trash"` on `op="export"` (paired with `store.export_trash`/`store.import_trash`) exports/imports exact `memory_trash` snapshots (id, `deleted_at`, embedded memory/details/links) with the same keyset `limit`/`cursor` mechanics as `scope="memories"`/`scope="links"`, keyed on `(deleted_at, id)` with a new `idx_trash_deleted_id` index. `op="import"` auto-routes to trash import when the payload carries a `"trash"` key. Closes the gap where a full local<->online migration previously could not carry over what was currently in the trash.
 
 ## Mandatory Workflow
 
@@ -89,6 +90,44 @@ Scope (initial intent):
   config that lives outside the git working tree (e.g. `~/.pypirc` for PyPI).
 
 ## Architecture Decision Log (ADL)
+
+### ADL 010 — `scope="trash"` pagination for `transfer_memories` (2026-08-28)
+
+**Context:**
+ADL 009's `scope="memories"`/`scope="links"` pagination only covers the live
+graph. Soft-deleted memories (`memory_trash`, from `forget_memories` /
+`restore_memories`) had no migration path at all: `export_data`/`import_data`
+never touch the trash table, so a full local<->online migration could not
+carry over what was currently in the trash without a manual
+restore-export-forget workaround on both ends (which also mutates
+`deleted_at`/history in a way that isn't a faithful copy).
+
+**Decision:**
+Added a third, independent pagination target mirroring ADL 009's shape:
+- `MemoryStore.export_trash(limit, cursor)` / `MemoryStore.import_trash(data, on_conflict)`:
+  same keyset-cursor pattern, keyed on `(deleted_at, id)` with a new
+  `idx_trash_deleted_id` index, so it scales the same way as memories/links.
+- `transfer_memories(op="export", scope="trash", ...)` routes to
+  `export_trash` instead of `export_data` (before scope validation, so it
+  does not need to satisfy `export_data`'s `all`/`memories`/`links` check).
+  `category`/`tags` are rejected for `scope="trash"` (trash rows carry no
+  filterable category/tags at the transport level — they are embedded inside
+  each row's frozen `payload`).
+- `transfer_memories(op="import", ...)` auto-detects a trash payload (its
+  `"trash"` list key) and routes to `import_trash` — no separate import op,
+  keeping the tool surface unchanged.
+- Trash payload preserves the exact snapshot shape `forget_memories` writes:
+  `{"id", "deleted_at", "payload": {"memory", "details", "links"}}`, id
+  round-trips 1:1 so a later `restore_memories(op="restore")` on the
+  destination behaves identically to what it would on the source.
+
+**Consequences:**
+- No breaking changes: `scope` still defaults to `"all"` (live graph only,
+  same as before this ADL and ADL 009).
+- Completes the "migrate everything" story for the local<->online large-graph
+  scenario ADL 009 was written for — memories, links, and trash all page the
+  same way.
+- Zero new dependencies.
 
 ### ADL 009 — Keyset-paginated `transfer_memories` export for large-graph migration (2026-08-28)
 

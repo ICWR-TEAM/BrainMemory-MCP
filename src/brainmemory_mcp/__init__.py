@@ -32,6 +32,12 @@ graphs can be migrated between two independent servers (e.g. local stdio and
 a remote HTTP/SSE deployment with no shared filesystem) in bounded-size
 pages instead of one giant inline payload.
 
+Since v0.11.9 ``scope="trash"`` extends that pagination to soft-deleted
+memories: exact ``memory_trash`` snapshots (id, ``deleted_at``, embedded
+memory/details/links) can be exported/imported page-by-page too, so a full
+migration between two servers can include what is currently in the trash,
+not just the live graph.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -39,7 +45,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.11.8"
+__version__ = "0.11.9"
 
 from .memory import (
     Memory,

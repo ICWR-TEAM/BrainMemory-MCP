@@ -384,6 +384,10 @@ class MemoryStore:
                 "ON memory_history(memory_id, version);"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trash_deleted_id "
+                "ON memory_trash(deleted_at, id);"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);"
             )
             conn.execute(
@@ -1326,6 +1330,103 @@ class MemoryStore:
             },
         }
         return payload
+
+    def export_trash(
+        self, *, limit: int | None = None, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Export exact soft-delete snapshots with stable keyset pagination."""
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be a positive integer")
+        after_deleted, after_id = _decode_cursor(cursor)
+        sql = "SELECT id, payload, deleted_at FROM memory_trash"
+        params: list[Any] = []
+        if after_deleted is not None:
+            sql += " WHERE (deleted_at, id) > (?, ?)"
+            params.extend((after_deleted, after_id))
+        sql += " ORDER BY deleted_at, id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        has_more = limit is not None and len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        trash = [
+            {
+                "id": row["id"],
+                "payload": json.loads(row["payload"]),
+                "deleted_at": row["deleted_at"],
+            }
+            for row in rows
+        ]
+        next_cursor = None
+        if has_more and rows:
+            next_cursor = _encode_cursor(rows[-1]["deleted_at"], rows[-1]["id"])
+        return {
+            "format": "brainmemory-export",
+            "format_version": 1,
+            "exported_at": _utcnow(),
+            "scope": "trash",
+            "counts": {"trash": len(trash)},
+            "trash": trash,
+            "pagination": {
+                "limit": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
+        }
+
+    def import_trash(
+        self, data: dict[str, Any], *, on_conflict: str = "skip"
+    ) -> dict[str, Any]:
+        """Import exact trash snapshots without restoring live memories."""
+        if not isinstance(data, dict) or not isinstance(data.get("trash"), list):
+            raise ValueError("invalid trash payload: expected {'trash': [...]}")
+        overwrite = str(on_conflict).lower() == "overwrite"
+        imported = overwritten = skipped_existing = 0
+        errors: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            for idx, item in enumerate(data["trash"]):
+                try:
+                    if not isinstance(item, dict) or not isinstance(item.get("payload"), dict):
+                        raise ValueError("trash item and payload must be JSON objects")
+                    trash_id = str(item.get("id") or "").strip()
+                    deleted_at = str(item.get("deleted_at") or "").strip()
+                    payload = item["payload"]
+                    memory = payload.get("memory")
+                    if not trash_id or not deleted_at or not isinstance(memory, dict):
+                        raise ValueError("id, deleted_at, and payload.memory are required")
+                    if str(memory.get("id") or "") != trash_id:
+                        raise ValueError("trash id must match payload.memory.id")
+                    exists = conn.execute(
+                        "SELECT 1 FROM memory_trash WHERE id = ?", (trash_id,)
+                    ).fetchone()
+                    if exists and not overwrite:
+                        skipped_existing += 1
+                        continue
+                    serialized = json.dumps(payload, ensure_ascii=False)
+                    if exists:
+                        conn.execute(
+                            "UPDATE memory_trash SET payload = ?, deleted_at = ? WHERE id = ?",
+                            (serialized, deleted_at, trash_id),
+                        )
+                        overwritten += 1
+                    else:
+                        conn.execute(
+                            "INSERT INTO memory_trash (id, payload, deleted_at) VALUES (?, ?, ?)",
+                            (trash_id, serialized, deleted_at),
+                        )
+                        imported += 1
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    errors.append({"index": idx, "error": str(exc)})
+            conn.commit()
+        return {
+            "imported": imported,
+            "overwritten": overwritten,
+            "skipped_existing": skipped_existing,
+            "errors": errors,
+        }
 
     def import_data(
         self, data: dict[str, Any], *, on_conflict: str = "skip"

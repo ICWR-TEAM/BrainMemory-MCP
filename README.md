@@ -88,8 +88,8 @@ rejected. Parent directories are created for file exports.
 Two independent servers (e.g. a **local stdio** server and a **remote
 HTTP/SSE** server, or vice versa) share no filesystem, so migrating between
 them goes through the calling agent's context — one giant `export` can be too
-big for a huge memory graph. Add `limit` (and `scope="memories"` or
-`scope="links"`) to page through it instead:
+big for a huge memory graph. Add `limit` (and `scope="memories"`,
+`scope="links"`, or `scope="trash"`) to page through it instead:
 
 ```json
 {"op": "export", "scope": "memories", "limit": 200}
@@ -103,11 +103,11 @@ with `scope="links"` — an `import` never errors on a link whose endpoints
 don't exist yet, it just skips it (reported in `links_skipped`), so
 exporting links before their memories only under-imports links, it never
 corrupts data. `scope="all"` (the default) stays a single unpaginated
-full-graph export/import, unchanged from before; `limit`/`cursor` require
-`scope="memories"` or `scope="links"`. Pagination uses a stable
-`(created_at, id)` keyset cursor (plain base64url text — safe to copy/paste
-through any client), so it stays O(page size) per call regardless of how
-large the graph is.
+full-graph export/import, unchanged from before; `limit`/`cursor` require a
+single scope (`"memories"`, `"links"`, or `"trash"` — not `"all"`).
+Pagination uses a stable keyset cursor (plain base64url text — safe to
+copy/paste through any client), so it stays O(page size) per call regardless
+of how large the graph is.
 
 Row count alone does not bound payload size: a `limit` of 100 can still be
 too big if some memories hold large content (e.g. full book-text sections).
@@ -116,9 +116,18 @@ raise it once you have confirmed pages stay comfortably within your client's
 tool-result budget.
 
 ```json
-{"op": "export", "scope": "memories", "limit": 200, "cursor": "2026-08-28T10:00:00+00:00<id>"}
+{"op": "export", "scope": "memories", "limit": 200, "cursor": "<next_cursor>"}
 {"op": "export", "scope": "links", "limit": 500}
+{"op": "export", "scope": "trash", "limit": 50}
 ```
+
+`scope="trash"` transfers exact soft-delete snapshots separately, preserving
+memory IDs, `deleted_at`, embedded details, and embedded links without a
+restore/forget workaround. Import trash pages with the same `op="import"`
+(the payload's own `"trash"` key routes it automatically — no separate
+import op); `on_conflict="skip"` is idempotent and `"overwrite"` replaces an
+existing trash snapshot. `category`/`tags` filters and `scope="all"` are not
+applicable to `scope="trash"` (trash rows carry no category/tag filtering).
 
 ### Mixed-operation batches
 

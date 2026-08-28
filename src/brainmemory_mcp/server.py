@@ -905,9 +905,9 @@ def create_server(
             category: Optional category filter for export.
             tags: Optional tags filter for export (all must match).
             on_conflict: Import handling: ``skip`` (default) or ``overwrite``.
-            scope: Export scope: ``"all"`` (default), ``"memories"``, or
-                ``"links"``. ``limit``/``cursor`` pagination requires
-                ``"memories"`` or ``"links"`` (not ``"all"``).
+            scope: Export scope: ``"all"`` (default), ``"memories"``,
+                ``"links"``, or ``"trash"``. ``limit``/``cursor`` pagination
+                requires a single scope (not ``"all"``).
             limit: Max rows to export in this call (enables pagination).
             cursor: Opaque cursor from a previous export's ``next_cursor``.
         """
@@ -916,9 +916,14 @@ def create_server(
         op_norm = str(op or "").strip().lower()
         if op_norm == "export":
             try:
-                payload = store.export_data(
-                    category=category, tags=tags, scope=scope, limit=limit, cursor=cursor
-                )
+                if str(scope or "all").strip().lower() == "trash":
+                    if category or tags:
+                        raise ValueError("category/tags filters are not supported for scope='trash'")
+                    payload = store.export_trash(limit=limit, cursor=cursor)
+                else:
+                    payload = store.export_data(
+                        category=category, tags=tags, scope=scope, limit=limit, cursor=cursor
+                    )
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
             pagination = payload["pagination"]
@@ -957,7 +962,10 @@ def create_server(
                     data = json.loads(source.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     raise TypeError("data must be a migration JSON object")
-                summary = store.import_data(data, on_conflict=on_conflict)
+                if data.get("scope") == "trash" or "trash" in data:
+                    summary = store.import_trash(data, on_conflict=on_conflict)
+                else:
+                    summary = store.import_data(data, on_conflict=on_conflict)
             except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
                 return {"status": "error", "error": str(exc)}
             result = {"status": "ok", "op": "import", "source": "upload", **summary}
