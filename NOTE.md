@@ -4,8 +4,8 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-28
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.3)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload plus optional server-local files over stdio and HTTP/SSE.
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.7)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload (now with keyset `limit`/`cursor`/`scope` pagination for large graphs) plus optional server-local files over stdio and HTTP/SSE.
 
 ---
 
@@ -68,6 +68,7 @@ Scope (initial intent):
 > Status update (2026-08-28): Release v0.11.2 makes graph HTML export use a single absolute `output_path`, and makes migration export/import file-based via absolute `output_path` / `input_path`. Relative paths and explicit `.` / `..` segments are rejected consistently; tools remain available through both stdio and HTTP/SSE.
 >
 > Status update (2026-08-28): Release v0.11.3 fixes cross-machine migration: export returns a downloadable inline `data` object and import accepts that object as an upload. Optional absolute paths remain supported for server-local workflows, so HTTP clients no longer need a shared filesystem with the server.
+> Status update (2026-08-28): Release v0.11.7 adds keyset pagination to `transfer_memories(op="export")` — `scope` (`all`/`memories`/`links`), `limit`, `cursor` — plus `has_more`/`next_cursor`, so a very large memory graph can be migrated between two independent servers (e.g. local stdio <-> remote HTTP/SSE, no shared filesystem) in bounded-size pages instead of one giant inline payload. New `(created_at, id)` indexes keep each page O(limit). `import_data` needed no changes — it already tolerates partial payloads and skips links with missing endpoints, which is exactly what makes the "page all memories, then page all links" migration flow safe. `scope="all"` without `limit` is unchanged (full one-shot export/import, same as pre-0.11.7).
 
 ## Mandatory Workflow
 
@@ -87,6 +88,48 @@ Scope (initial intent):
   config that lives outside the git working tree (e.g. `~/.pypirc` for PyPI).
 
 ## Architecture Decision Log (ADL)
+
+### ADL 009 — Keyset-paginated `transfer_memories` export for large-graph migration (2026-08-28)
+
+**Context:**
+A user asked how to migrate a *large* memory graph between two independent
+`brainmemory-mcp` server processes with a specific topology: a **local stdio**
+instance and a separate **online HTTP/SSE** instance, each with its own SQLite
+database and no shared filesystem. The only bridge between the two is the
+calling agent's context (export result -> import argument). The pre-0.11.7
+`transfer_memories(op="export")` always dumped the entire filtered graph as
+one JSON blob, which does not scale: for a sufficiently large graph it can
+exceed the agent's context/tool-result budget well before hitting any MCP
+protocol limit.
+
+**Decision:**
+Added optional keyset pagination to `op="export"` only (import already
+tolerated partial payloads, so it needed no changes):
+- New parameters `scope` (`"all"` default / `"memories"` / `"links"`),
+  `limit`, `cursor`.
+- Ordering/cursor is a stable `(created_at, id)` keyset (not `OFFSET`), backed
+  by two new indexes (`idx_memories_created_id`, `idx_links_created_id`), so
+  each page costs O(limit) regardless of total graph size — important for
+  "brutal" (very large) graphs, not just the small ones tested in CI.
+- `limit`/`cursor` require `scope="memories"` or `scope="links"` — a single
+  cursor cannot page two unrelated tables at once. `scope="all"` remains the
+  original unpaginated one-shot full-graph export/import, unchanged.
+- Response gained top-level `has_more`/`next_cursor` (mirrored in
+  `data.pagination`) so an agent can loop: export a memories page -> import it
+  -> repeat until exhausted -> then repeat the same loop with
+  `scope="links"`. Because `import_data` already silently skips links whose
+  endpoints don't exist yet (`links_skipped`), doing memories-first-then-links
+  is safe by construction, not something the caller has to get exactly right.
+
+**Consequences:**
+- No breaking changes: `transfer_memories(op="export")` with no `limit` (the
+  common case for small/medium graphs) behaves exactly as before, same
+  payload shape plus two new always-present, ignorable fields (`scope`,
+  `pagination`).
+- Zero new dependencies (stdlib `sqlite3` only, per NOTE.md restrictions).
+- Large-graph migration cost moved from "one huge context-busting call" to
+  "N bounded calls", trading round-trips for reliability — acceptable since
+  `transfer_memories` is an infrequent, deliberate operation, not a hot path.
 
 ### ADL 008 — Expansion to 15 tools with HTML Graph Export, Soft-Delete Safety Net, and Data Transfer/Backup (2026-08-19)
 

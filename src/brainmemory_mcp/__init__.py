@@ -26,6 +26,12 @@ Since v0.10.0 expanded to **15 tools** with 3 new capabilities:
 - ``restore_memories`` : soft delete trash, version history & rollback
 - ``transfer_memories`` : inline upload/download, file migration & database backup
 
+Since v0.11.7 ``transfer_memories`` supports keyset pagination (``limit`` +
+``cursor`` + ``scope="memories"|"links"``) on ``op="export"`` so very large
+graphs can be migrated between two independent servers (e.g. local stdio and
+a remote HTTP/SSE deployment with no shared filesystem) in bounded-size
+pages instead of one giant inline payload.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -33,7 +39,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.11.3"
+__version__ = "0.11.7"
 
 from .memory import (
     Memory,

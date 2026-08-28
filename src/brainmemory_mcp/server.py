@@ -15,7 +15,8 @@ precise and multi-hop — while the tool vocabulary stays "memory"-oriented.
 Since v0.10.0 the tool surface expands to **15 tools** (3 new additions):
 - export_graph_html   : render full graph as standalone 3D interactive HTML
 - restore_memories    : soft-delete safety net (trash, history, rollback, purge)
-- transfer_memories   : export / import memories, details & links in JSON
+- transfer_memories   : export / import memories, details & links in JSON,
+  with optional keyset pagination (limit/cursor/scope) for large graphs
 
 Cognitive tools (15):
     - store_memories      : persist one or more memories (nodes)
@@ -33,7 +34,8 @@ Cognitive tools (15):
     - summarize_memories  : summary statistics over the memory graph
     - export_graph_html   : render full graph as standalone interactive 3D HTML
     - restore_memories    : manage soft-deleted trash, history & rollback
-    - transfer_memories   : inline upload/download, file migration + backup
+    - transfer_memories   : inline upload/download, keyset-paginated large-graph
+                            migration, file migration + backup
 """
 
 from __future__ import annotations
@@ -873,12 +875,27 @@ def create_server(
         category: str | None = None,
         tags: list[str] | None = None,
         on_conflict: str = "skip",
+        scope: str = "all",
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         """Upload/download graph data or use server-local migration files.
 
         Inline ``data`` is transport-safe: an export can be downloaded in the
         MCP result and passed directly to an HTTP/SSE server for import. Paths
         remain available for same-host workflows and database backups.
+
+        For large graphs moving between two independent servers that share no
+        filesystem (e.g. local stdio <-> remote HTTP/SSE), a single ``export``
+        can be too big for the calling agent's context. Pass ``limit`` (and
+        ``scope="memories"`` or ``scope="links"``) to page through the graph
+        instead: each call returns at most ``limit`` rows plus ``has_more`` /
+        ``next_cursor``; keep calling with the returned ``cursor`` until
+        ``has_more`` is ``false``, feeding each page's ``data`` straight into
+        an ``import`` call on the destination. Page through every
+        ``scope="memories"`` batch first, then ``scope="links"`` — importing
+        a link before both its endpoint memories exist just skips it
+        (reported in ``links_skipped``), it never corrupts data.
 
         Args:
             op: Operation to perform: ``export``, ``import``, or ``backup``.
@@ -888,16 +905,30 @@ def create_server(
             category: Optional category filter for export.
             tags: Optional tags filter for export (all must match).
             on_conflict: Import handling: ``skip`` (default) or ``overwrite``.
+            scope: Export scope: ``"all"`` (default), ``"memories"``, or
+                ``"links"``. ``limit``/``cursor`` pagination requires
+                ``"memories"`` or ``"links"`` (not ``"all"``).
+            limit: Max rows to export in this call (enables pagination).
+            cursor: Opaque cursor from a previous export's ``next_cursor``.
         """
         import json
 
         op_norm = str(op or "").strip().lower()
         if op_norm == "export":
-            payload = store.export_data(category=category, tags=tags)
+            try:
+                payload = store.export_data(
+                    category=category, tags=tags, scope=scope, limit=limit, cursor=cursor
+                )
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+            pagination = payload["pagination"]
             result: dict[str, Any] = {
                 "status": "ok",
                 "op": "export",
+                "scope": payload["scope"],
                 "counts": payload["counts"],
+                "has_more": pagination["has_more"],
+                "next_cursor": pagination["next_cursor"],
                 "data": payload,
             }
             if output_path:

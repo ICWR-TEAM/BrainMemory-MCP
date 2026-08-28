@@ -51,7 +51,7 @@ three entities** with 15 tools.
 | `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
 | `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file at an absolute `output_path`. |
 | `restore_memories` | Soft-delete trash, history, rollback, and trash purge management. |
-| `transfer_memories` | Download/upload migration JSON inline across MCP servers, with optional absolute file paths. |
+| `transfer_memories` | Download/upload migration JSON inline across MCP servers, with optional absolute file paths and keyset pagination for large graphs. |
 
 Every list-taking tool processes items independently and reports a per-item
 `status` — one bad item never aborts the batch.
@@ -81,6 +81,36 @@ rejected. Parent directories are created for file exports.
 {"output_path": "/absolute/workspace/memory-graph.html"}
 {"op": "export", "output_path": "/absolute/workspace/brainmemory.json"}
 {"op": "import", "input_path": "/absolute/workspace/brainmemory.json", "on_conflict": "skip"}
+```
+
+#### Paginated migration for large graphs (v0.11.7+)
+
+Two independent servers (e.g. a **local stdio** server and a **remote
+HTTP/SSE** server, or vice versa) share no filesystem, so migrating between
+them goes through the calling agent's context — one giant `export` can be too
+big for a huge memory graph. Add `limit` (and `scope="memories"` or
+`scope="links"`) to page through it instead:
+
+```json
+{"op": "export", "scope": "memories", "limit": 200}
+```
+
+Each call returns `has_more` / `next_cursor` at the top level; keep calling
+with `cursor=<next_cursor>` until `has_more` is `false`, feeding each page's
+`data` straight into `{"op": "import", "data": ...}` on the destination
+server. Page through every `scope="memories"` batch **first**, then repeat
+with `scope="links"` — an `import` never errors on a link whose endpoints
+don't exist yet, it just skips it (reported in `links_skipped`), so
+exporting links before their memories only under-imports links, it never
+corrupts data. `scope="all"` (the default) stays a single unpaginated
+full-graph export/import, unchanged from before; `limit`/`cursor` require
+`scope="memories"` or `scope="links"`. Pagination uses a stable
+`(created_at, id)` keyset cursor, so it stays O(page size) per call
+regardless of how large the graph is.
+
+```json
+{"op": "export", "scope": "memories", "limit": 200, "cursor": "2026-08-28T10:00:00+00:00<id>"}
+{"op": "export", "scope": "links", "limit": 500}
 ```
 
 ### Mixed-operation batches

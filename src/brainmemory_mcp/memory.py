@@ -105,6 +105,23 @@ def _parse_ts(value: str) -> float:
         return 0.0
 
 
+_CURSOR_SEP = "\x1f"  # ASCII unit separator: never appears in ISO timestamps/uuid hex ids
+
+
+def _encode_cursor(created_at: str, row_id: str) -> str:
+    return f"{created_at}{_CURSOR_SEP}{row_id}"
+
+
+def _decode_cursor(cursor: str | None) -> tuple[str, str] | tuple[None, None]:
+    """Decode a keyset pagination cursor produced by :func:`_encode_cursor`."""
+    if not cursor:
+        return None, None
+    parts = str(cursor).split(_CURSOR_SEP)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("invalid cursor")
+    return parts[0], parts[1]
+
+
 def _tokenize(query: str | None) -> list[str]:
     """Split a query into search tokens (lower-cased, stop-words trimmed)."""
     if not query:
@@ -367,6 +384,18 @@ class MemoryStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_links_target ON memory_links(target_id);"
+            )
+            # Keyset-pagination indexes for transfer_memories (op=export with a
+            # limit/cursor): (created_at, id) is a stable, total ordering that
+            # lets a huge graph be paged through in O(limit) per call instead
+            # of the O(offset) cost a plain LIMIT/OFFSET scan would pay.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_created_id "
+                "ON memories(created_at, id);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_links_created_id "
+                "ON memory_links(created_at, id);"
             )
             if self.fts_enabled:
                 self._ensure_fts(conn)
@@ -1152,40 +1181,124 @@ class MemoryStore:
         *,
         category: str | None = None,
         tags: Iterable[str] | None = None,
+        scope: str = "all",
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Dump memories (with their details) + links as a portable payload."""
+        """Dump memories (with details) and/or links as a portable, pageable payload.
+
+        ``scope`` selects what this call returns: ``"memories"`` (memories +
+        their details, no links), ``"links"`` (links only, no memories), or
+        ``"all"`` (both — the default, matching the original one-shot
+        behaviour). ``limit``/``cursor`` add stable keyset pagination over
+        ``(created_at, id)`` so a very large graph can be paged through in
+        bounded-size calls instead of one giant payload; each call returns at
+        most ``limit`` rows plus ``has_more``/``next_cursor`` in the result
+        (top-level, mirrored into the payload). Pagination requires
+        ``scope in ("memories", "links")`` — a single cursor cannot walk two
+        unrelated tables at once, so migrate memories to completion first,
+        then links (``import_data`` already skips links whose endpoints do
+        not exist yet, so exporting links before their memories would
+        silently under-import).
+        """
+        scope_norm = str(scope or "all").strip().lower()
+        if scope_norm not in ("all", "memories", "links"):
+            raise ValueError("scope must be one of: all, memories, links")
+        if limit is not None and scope_norm == "all":
+            raise ValueError(
+                "limit/cursor pagination requires scope='memories' or scope='links' "
+                "(scope='all' is only for a full, unpaginated export)"
+            )
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be a positive integer")
+        after_created, after_id = _decode_cursor(cursor)
         wanted_tags = [t.strip() for t in (tags or []) if t and t.strip()]
+
+        memories: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        total_details = 0
+        has_more = False
+        next_cursor: str | None = None
+
         with self._connect() as conn:
-            memories: list[dict[str, Any]] = []
-            keep: set[str] = set()
-            total_details = 0
-            for r in conn.execute(
-                "SELECT * FROM memories ORDER BY created_at"
-            ).fetchall():
-                mem = _row_to_memory(r)
-                if not self._passes_filters(mem, category, wanted_tags, None):
-                    continue
-                keep.add(mem.id)
-                entry = mem.to_dict()
-                entry["details"] = [
-                    _row_to_detail(d).to_dict()
-                    for d in conn.execute(
-                        "SELECT * FROM memory_details WHERE memory_id = ? "
-                        "ORDER BY created_at",
-                        (mem.id,),
-                    ).fetchall()
-                ]
-                total_details += len(entry["details"])
-                memories.append(entry)
-            links = [
-                l.to_dict()
-                for l in self._all_links(conn)
-                if l.source_id in keep and l.target_id in keep
-            ]
-        return {
+            if scope_norm in ("all", "memories"):
+                sql = "SELECT * FROM memories"
+                params: list[Any] = []
+                if category:
+                    sql += " WHERE category = ?"
+                    params.append(category.strip())
+                if after_created is not None:
+                    sql += " AND " if params else " WHERE "
+                    sql += "(created_at, id) > (?, ?)"
+                    params += [after_created, after_id]
+                sql += " ORDER BY created_at, id"
+                if limit is not None:
+                    sql += " LIMIT ?"
+                    params.append(limit + 1)
+                rows = conn.execute(sql, params).fetchall()
+                if limit is not None and len(rows) > limit:
+                    has_more = True
+                    rows = rows[:limit]
+                for r in rows:
+                    mem = _row_to_memory(r)
+                    if scope_norm == "memories" and limit is not None:
+                        next_cursor = _encode_cursor(mem.created_at, mem.id)
+                    if not self._passes_filters(mem, category, wanted_tags, None):
+                        continue
+                    entry = mem.to_dict()
+                    entry["details"] = [
+                        _row_to_detail(d).to_dict()
+                        for d in conn.execute(
+                            "SELECT * FROM memory_details WHERE memory_id = ? "
+                            "ORDER BY created_at",
+                            (mem.id,),
+                        ).fetchall()
+                    ]
+                    total_details += len(entry["details"])
+                    memories.append(entry)
+                if not has_more:
+                    next_cursor = None
+
+            if scope_norm in ("all", "links"):
+                sql = "SELECT * FROM memory_links"
+                params = []
+                if after_created is not None:
+                    sql += " WHERE (created_at, id) > (?, ?)"
+                    params += [after_created, after_id]
+                sql += " ORDER BY created_at, id"
+                if limit is not None:
+                    sql += " LIMIT ?"
+                    params.append(limit + 1)
+                rows = conn.execute(sql, params).fetchall()
+                link_has_more = limit is not None and len(rows) > limit
+                if link_has_more:
+                    rows = rows[:limit]
+                for r in rows:
+                    link = _row_to_link(r)
+                    if scope_norm == "links" and limit is not None:
+                        next_cursor = _encode_cursor(link.created_at, link.id)
+                    if scope_norm == "all":
+                        # Full-graph export: only include links whose both
+                        # endpoints passed the memory-level filters above.
+                        src = self._get_conn(conn, link.source_id)
+                        tgt = self._get_conn(conn, link.target_id)
+                        if src is None or tgt is None:
+                            continue
+                        if not self._passes_filters(
+                            src, category, wanted_tags, None
+                        ) or not self._passes_filters(tgt, category, wanted_tags, None):
+                            continue
+                    links.append(link.to_dict())
+                if scope_norm == "links":
+                    has_more = link_has_more
+                    if not has_more:
+                        next_cursor = None
+
+        payload = {
             "format": "brainmemory-export",
             "format_version": 1,
             "exported_at": _utcnow(),
+            "scope": scope_norm,
             "counts": {
                 "memories": len(memories),
                 "details": total_details,
@@ -1193,7 +1306,13 @@ class MemoryStore:
             },
             "memories": memories,
             "links": links,
+            "pagination": {
+                "limit": limit,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
         }
+        return payload
 
     def import_data(
         self, data: dict[str, Any], *, on_conflict: str = "skip"
