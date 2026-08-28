@@ -4,7 +4,7 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-08-28
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.7)
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.8)
 Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload (now with keyset `limit`/`cursor`/`scope` pagination for large graphs) plus optional server-local files over stdio and HTTP/SSE.
 
 ---
@@ -69,6 +69,7 @@ Scope (initial intent):
 >
 > Status update (2026-08-28): Release v0.11.3 fixes cross-machine migration: export returns a downloadable inline `data` object and import accepts that object as an upload. Optional absolute paths remain supported for server-local workflows, so HTTP clients no longer need a shared filesystem with the server.
 > Status update (2026-08-28): Release v0.11.7 adds keyset pagination to `transfer_memories(op="export")` — `scope` (`all`/`memories`/`links`), `limit`, `cursor` — plus `has_more`/`next_cursor`, so a very large memory graph can be migrated between two independent servers (e.g. local stdio <-> remote HTTP/SSE, no shared filesystem) in bounded-size pages instead of one giant inline payload. New `(created_at, id)` indexes keep each page O(limit). `import_data` needed no changes — it already tolerates partial payloads and skips links with missing endpoints, which is exactly what makes the "page all memories, then page all links" migration flow safe. `scope="all"` without `limit` is unchanged (full one-shot export/import, same as pre-0.11.7).
+> Status update (2026-08-28): Release v0.11.8 fixes a real bug found while live-testing a local(stdio)->online(HTTP) migration with real production data: the v0.11.7 `next_cursor` embedded a raw `\x1f` control byte, which round-tripped unreliably through hand/tool-call relaying. Cursor is now base64url-encoded plain ASCII text. Also confirmed empirically during that test: a 100-row page can still exceed a calling agent's tool-result size limit when memories contain large content (e.g. full book-text sections) — callers migrating such graphs should pick a smaller `limit` (start around 15-25) rather than assuming row-count alone bounds payload size.
 
 ## Mandatory Workflow
 

@@ -44,6 +44,7 @@ or rewritten.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
@@ -109,14 +110,26 @@ _CURSOR_SEP = "\x1f"  # ASCII unit separator: never appears in ISO timestamps/uu
 
 
 def _encode_cursor(created_at: str, row_id: str) -> str:
-    return f"{created_at}{_CURSOR_SEP}{row_id}"
+    """Encode a keyset cursor as plain base64url text.
+
+    The raw ``created_at\\x1fid`` value contains a control byte, which is
+    awkward to round-trip reliably once it passes through JSON/tool-call
+    layers of arbitrary MCP clients (some mangle or lose raw control bytes on
+    copy). Base64url keeps the cursor opaque *and* plain-ASCII-safe.
+    """
+    raw = f"{created_at}{_CURSOR_SEP}{row_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
 def _decode_cursor(cursor: str | None) -> tuple[str, str] | tuple[None, None]:
     """Decode a keyset pagination cursor produced by :func:`_encode_cursor`."""
     if not cursor:
         return None, None
-    parts = str(cursor).split(_CURSOR_SEP)
+    try:
+        raw = base64.urlsafe_b64decode(str(cursor).encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        raise ValueError("invalid cursor") from None
+    parts = raw.split(_CURSOR_SEP)
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError("invalid cursor")
     return parts[0], parts[1]

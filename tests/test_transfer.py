@@ -100,3 +100,27 @@ def test_export_pagination_requires_scope_memories_or_links(tmp_path: Path):
     result = tool(op="export", scope="all", limit=10)
     assert result["status"] == "error"
     assert "scope" in result["error"]
+
+
+def test_export_cursor_is_plain_ascii_and_safely_round_trips(tmp_path: Path):
+    # Regression test: an earlier revision embedded a raw \x1f control byte in
+    # the cursor, which was awkward to round-trip once it passed through
+    # JSON/tool-call layers of some MCP clients. The cursor must be plain
+    # ASCII (base64url) so any client can copy it verbatim.
+    server = create_server(data_dir=str(tmp_path / "data"))
+    server._tool_manager._tools["store_memories"].fn(
+        [{"content": f"memory {i}"} for i in range(3)]
+    )
+    page1 = server._tool_manager._tools["transfer_memories"].fn(
+        op="export", scope="memories", limit=1
+    )
+    cursor = page1["next_cursor"]
+    assert cursor is not None
+    assert cursor.isascii()
+    assert all(ch not in cursor for ch in ("\x1f", " ", "\n", "\t"))
+
+    page2 = server._tool_manager._tools["transfer_memories"].fn(
+        op="export", scope="memories", limit=1, cursor=cursor
+    )
+    assert page2["status"] == "ok"
+    assert len(page2["data"]["memories"]) == 1

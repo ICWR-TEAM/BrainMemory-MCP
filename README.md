@@ -105,8 +105,15 @@ exporting links before their memories only under-imports links, it never
 corrupts data. `scope="all"` (the default) stays a single unpaginated
 full-graph export/import, unchanged from before; `limit`/`cursor` require
 `scope="memories"` or `scope="links"`. Pagination uses a stable
-`(created_at, id)` keyset cursor, so it stays O(page size) per call
-regardless of how large the graph is.
+`(created_at, id)` keyset cursor (plain base64url text — safe to copy/paste
+through any client), so it stays O(page size) per call regardless of how
+large the graph is.
+
+Row count alone does not bound payload size: a `limit` of 100 can still be
+too big if some memories hold large content (e.g. full book-text sections).
+Start with a modest `limit` (15-25) for graphs with long-content memories and
+raise it once you have confirmed pages stay comfortably within your client's
+tool-result budget.
 
 ```json
 {"op": "export", "scope": "memories", "limit": 200, "cursor": "2026-08-28T10:00:00+00:00<id>"}
