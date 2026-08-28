@@ -24,7 +24,7 @@ link/unlink).
 Since v0.10.0 expanded to **15 tools** with 3 new capabilities:
 - ``export_graph_html`` : standalone interactive 3D HTML visualization
 - ``restore_memories`` : soft delete trash, version history & rollback
-- ``transfer_memories`` : export, import & instant backup of graph data
+- ``transfer_memories`` : file-based export/import & instant database backup
 
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
@@ -33,7 +33,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.11.1"
+__version__ = "0.11.2"
 
 from .memory import (
     Memory,

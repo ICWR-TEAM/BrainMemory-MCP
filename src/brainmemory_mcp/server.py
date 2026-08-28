@@ -33,7 +33,7 @@ Cognitive tools (15):
     - summarize_memories  : summary statistics over the memory graph
     - export_graph_html   : render full graph as standalone interactive 3D HTML
     - restore_memories    : manage soft-deleted trash, history & rollback
-    - transfer_memories   : export / import / backup whole knowledge graph
+    - transfer_memories   : file-based export / import + database backup
 """
 
 from __future__ import annotations
@@ -48,6 +48,19 @@ from mcp.server.fastmcp import FastMCP
 from .memory import DEFAULT_RELATION, MemoryStore, default_data_dir
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "memory_graph.html"
+
+
+def require_absolute_file_path(value: str, *, parameter: str) -> Path:
+    """Validate a user-controlled file path without resolving dot segments."""
+    if not value or not str(value).strip():
+        raise ValueError(f"{parameter} is required")
+    raw = str(value).strip()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{parameter} must be an absolute path")
+    if any(part in {".", ".."} for part in raw.replace("\\", "/").split("/")):
+        raise ValueError(f"{parameter} must not contain . or .. path segments")
+    return path
 
 
 class BearerKeyMiddleware:
@@ -664,61 +677,36 @@ def create_server(
 
     @mcp.tool()
     def export_graph_html(
-        directory: str,
-        output_path: str = "memory-graph.html",
+        output_path: str,
         category: str | None = None,
         tags: list[str] | None = None,
         label_length: int = 80,
     ) -> dict[str, Any]:
         """Render the complete knowledge graph into a 3D interactive HTML file.
 
-        Creates an openable HTML document featuring black/white/aqua theme,
-        three.js + 3d-force-graph visualization, search, category filters, and
-        interactive node panels. Graph data is embedded directly into the file.
-
         Args:
-            directory: Target directory for the exported HTML.
-            output_path: File name or path to save the HTML visualization to. Relative
-                ``output_path`` values are resolved inside this directory.
-                Absolute ``output_path`` values are accepted as-is.
+            output_path: Absolute destination file path. Relative paths and paths
+                containing ``.`` or ``..`` segments are rejected.
             category: Optional category filter.
             tags: Optional tags filter (all must match).
             label_length: Max characters for node labels in graph.
-
-        Returns:
-            Dict with output_path, total nodes & links exported, and byte size.
         """
         import json
 
+        try:
+            out_file = require_absolute_file_path(output_path, parameter="output_path")
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}
         if not _TEMPLATE_PATH.exists():
-            return {
-                "status": "error",
-                "error": f"template file missing at {_TEMPLATE_PATH}",
-            }
+            return {"status": "error", "error": f"template file missing at {_TEMPLATE_PATH}"}
+
         template = _TEMPLATE_PATH.read_text(encoding="utf-8")
         graph_data = store.export_graph(category=category, tags=tags, label_length=label_length)
-        json_blob = json.dumps(graph_data, ensure_ascii=False)
-        rendered = template.replace("/*__GRAPH_DATA__*/", json_blob)
-
-        if not directory:
-            return {
-                "status": "error",
-                "error": "directory is required",
-            }
-        out_dir = Path(directory).expanduser()
-        if not out_dir.is_absolute():
-            return {
-                "status": "error",
-                "error": "directory must be an absolute path",
-            }
-        raw_out = Path(output_path).expanduser()
-        if not raw_out.is_absolute():
-            out_file = (out_dir / raw_out).resolve()
-        else:
-            out_file = raw_out.resolve()
+        rendered = template.replace(
+            "/*__GRAPH_DATA__*/", json.dumps(graph_data, ensure_ascii=False)
+        )
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_text(rendered, encoding="utf-8")
-
         return {
             "status": "ok",
             "output_path": str(out_file),
@@ -879,46 +867,66 @@ def create_server(
     @mcp.tool()
     def transfer_memories(
         op: str,
-        data: dict[str, Any] | None = None,
+        input_path: str | None = None,
+        output_path: str | None = None,
         category: str | None = None,
         tags: list[str] | None = None,
         on_conflict: str = "skip",
     ) -> dict[str, Any]:
-        """Export, import, or create an instant backup of the knowledge graph.
+        """Export/import migration files or create an instant database backup.
+
+        This MCP tool has the same behavior over stdio and HTTP/SSE.
 
         Args:
-            op: Operation to perform: "export" | "import" | "backup".
-            data: Payload dictionary for "import" (produced by "export").
-            category: Optional category filter for "export".
-            tags: Optional tags filter for "export".
-            on_conflict: Conflict handling for "import": "skip" (default) or "overwrite".
-
-        Returns:
-            Dict containing export payload, import counts, or backup path.
+            op: Operation to perform: ``export``, ``import``, or ``backup``.
+            input_path: Absolute JSON file path required for import.
+            output_path: Absolute JSON file path required for export.
+            category: Optional category filter for export.
+            tags: Optional tags filter for export.
+            on_conflict: Import handling: ``skip`` (default) or ``overwrite``.
         """
+        import json
+
         op_norm = str(op or "").strip().lower()
         if op_norm == "export":
-            payload = store.export_data(category=category, tags=tags)
-            return {"status": "ok", "op": "export", **payload}
-        elif op_norm == "import":
-            if not data:
-                return {
-                    "status": "error",
-                    "error": "data dictionary is required for import",
-                }
             try:
-                summary = store.import_data(data, on_conflict=on_conflict)
+                target = require_absolute_file_path(
+                    output_path or "", parameter="output_path"
+                )
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
-            return {"status": "ok", "op": "import", **summary}
-        elif op_norm == "backup":
+            payload = store.export_data(category=category, tags=tags)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            return {
+                "status": "ok",
+                "op": "export",
+                "output_path": str(target),
+                "bytes": target.stat().st_size,
+                "counts": payload["counts"],
+            }
+        if op_norm == "import":
+            try:
+                source = require_absolute_file_path(input_path or "", parameter="input_path")
+                data = json.loads(source.read_text(encoding="utf-8"))
+                summary = store.import_data(data, on_conflict=on_conflict)
+            except (ValueError, OSError, json.JSONDecodeError) as exc:
+                return {"status": "error", "error": str(exc)}
+            return {
+                "status": "ok",
+                "op": "import",
+                "input_path": str(source),
+                **summary,
+            }
+        if op_norm == "backup":
             path = store.backup_now()
             return {"status": "ok", "op": "backup", "backup_path": str(path)}
-        else:
-            return {
-                "status": "error",
-                "error": "op must be one of: export, import, backup",
-            }
+        return {
+            "status": "error",
+            "error": "op must be one of: export, import, backup",
+        }
 
     # ------------------------------------------------------------- resources #
 

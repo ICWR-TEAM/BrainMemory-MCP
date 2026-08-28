@@ -3,9 +3,9 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-08-20
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.1)
-Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with agent-controlled absolute output directory, and full graph data transfer/backup.
+Last Update Project: 2026-08-28
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.2)
+Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and file-based graph migration export/import available identically over stdio and HTTP/SSE.
 
 ---
 
@@ -65,6 +65,7 @@ Scope (initial intent):
 > Status update (2026-08-19): Release v0.11.0 refreshed the README, kept the 15-tool surface, and bumped the package version.
 >
 > Status update (2026-08-20): Release v0.11.1 adds optional Bearer-key authorization for HTTP/SSE mode through `--key` or `BRAINMEMORY_KEY`. When configured, both `/sse` and `/messages/` require `Authorization: Bearer <key>`; omitted keys preserve backward-compatible unauthenticated web mode.
+> Status update (2026-08-28): Release v0.11.2 makes graph HTML export use a single absolute `output_path`, and makes migration export/import file-based via absolute `output_path` / `input_path`. Relative paths and explicit `.` / `..` segments are rejected consistently; tools remain available through both stdio and HTTP/SSE.
 
 ## Mandatory Workflow
 
@@ -97,7 +98,7 @@ a reliable way to export/import/backup knowledge graph payloads.
 Expanded the server from 12 tools to 15 tools with three new tools:
 1. `export_graph_html`: Renders complete knowledge graph into a standalone 3D HTML document (`three.js` + `3d-force-graph` HUD), titled `BrainMemory MCP — 3D Knowledge Graph` with byline `By HarshXor - R&D incrustwerush.org`.
 2. `restore_memories`: Mixed-operation tool (`list_trash`, `restore`, `purge_trash`, `history`, `rollback`) backed by `memory_trash` and `memory_history` SQLite tables. `forget_memories` now soft-deletes into trash; `update_memories` automatically creates version snapshots before mutation.
-3. `transfer_memories`: Mixed-operation tool (`export`, `import`, `backup`) for JSON transfer and online SQLite DB backup snapshots.
+3. `transfer_memories`: Mixed-operation tool for absolute-path JSON migration export/import plus online SQLite DB backup snapshots. Export uses `output_path`, import uses `input_path`, and both reject relative or dot-segment paths.
 
 **Consequences:**
 - Zero external Python dependencies added (`sqlite3` stdlib + template string).

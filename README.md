@@ -49,12 +49,28 @@ three entities** with 15 tools.
 | `connect_memories` | Shortest connection (path) between two memories. |
 | `memory_map` | Return a map (nodes + links) of the memory graph. |
 | `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
-| `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file. |
+| `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file at an absolute `output_path`. |
 | `restore_memories` | Soft-delete trash, history, rollback, and trash purge management. |
-| `transfer_memories` | Export/import graph data and create instant database backups. |
+| `transfer_memories` | Export/import migration JSON files using absolute `output_path` / `input_path`. |
 
 Every list-taking tool processes items independently and reports a per-item
 `status` — one bad item never aborts the batch.
+
+### File export and migration
+
+File operations are exposed through the same MCP tool registry in both stdio
+and HTTP/SSE modes. `export_graph_html` now takes one `output_path`, which must
+be the absolute destination HTML path. `transfer_memories(op="export")` writes
+a portable JSON migration file to an absolute `output_path`, while
+`transfer_memories(op="import")` reads it from an absolute `input_path`.
+Relative paths (including `./file` and `../file`) and explicit `.` / `..` path
+segments are rejected. Parent directories are created for exports.
+
+```json
+{"output_path": "/absolute/workspace/memory-graph.html"}
+{"op": "export", "output_path": "/absolute/workspace/brainmemory.json"}
+{"op": "import", "input_path": "/absolute/workspace/brainmemory.json", "on_conflict": "skip"}
+```
 
 ### Mixed-operation batches
 
