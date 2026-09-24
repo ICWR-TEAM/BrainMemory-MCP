@@ -38,6 +38,19 @@ memory/details/links) can be exported/imported page-by-page too, so a full
 migration between two servers can include what is currently in the trash,
 not just the live graph.
 
+Since v0.12.0 ``search_memory`` and ``list_memories`` accept an optional
+``content_chars`` parameter that truncates each memory's ``content`` to a
+preview of that many characters (adding ``content_truncated`` /
+``content_length`` flags), so listings/searches over large memories no longer
+have to dump every full body — use ``recall_memories`` for the complete text.
+
+Since v0.13.0 that optional ``content_chars`` preview is available on every
+read/browse tool that returns memory bodies: ``recall_memories`` (memory +
+included details), ``recall_related``, ``connect_memories``, ``memory_map``,
+plus the ``list_trash`` / ``history`` ops of ``restore_memories`` (per-item
+``content_chars``). Write tools and ``transfer_memories`` deliberately stay
+full-fidelity so echoes and migrations are never truncated.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -45,7 +58,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.11.9"
+__version__ = "0.13.0"
 
 from .memory import (
     Memory,

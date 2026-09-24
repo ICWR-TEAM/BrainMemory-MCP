@@ -3,8 +3,8 @@
 ---
 
 Project Start Date: 2026-07-21
-Last Update Project: 2026-08-28
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.11.9)
+Last Update Project: 2026-09-24
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.13.0)
 Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload with keyset `limit`/`cursor`/`scope` pagination for large active graphs and exact trash snapshots, plus optional server-local files over stdio and HTTP/SSE.
 
 ---
@@ -71,6 +71,8 @@ Scope (initial intent):
 > Status update (2026-08-28): Release v0.11.7 adds keyset pagination to `transfer_memories(op="export")` — `scope` (`all`/`memories`/`links`), `limit`, `cursor` — plus `has_more`/`next_cursor`, so a very large memory graph can be migrated between two independent servers (e.g. local stdio <-> remote HTTP/SSE, no shared filesystem) in bounded-size pages instead of one giant inline payload. New `(created_at, id)` indexes keep each page O(limit). `import_data` needed no changes — it already tolerates partial payloads and skips links with missing endpoints, which is exactly what makes the "page all memories, then page all links" migration flow safe. `scope="all"` without `limit` is unchanged (full one-shot export/import, same as pre-0.11.7).
 > Status update (2026-08-28): Release v0.11.8 fixes a real bug found while live-testing a local(stdio)->online(HTTP) migration with real production data: the v0.11.7 `next_cursor` embedded a raw `\x1f` control byte, which round-tripped unreliably through hand/tool-call relaying. Cursor is now base64url-encoded plain ASCII text. Also confirmed empirically during that test: a 100-row page can still exceed a calling agent's tool-result size limit when memories contain large content (e.g. full book-text sections) — callers migrating such graphs should pick a smaller `limit` (start around 15-25) rather than assuming row-count alone bounds payload size.
 > Status update (2026-08-28): Release v0.11.9 extends `transfer_memories` pagination to soft-deleted memories: new `scope="trash"` on `op="export"` (paired with `store.export_trash`/`store.import_trash`) exports/imports exact `memory_trash` snapshots (id, `deleted_at`, embedded memory/details/links) with the same keyset `limit`/`cursor` mechanics as `scope="memories"`/`scope="links"`, keyed on `(deleted_at, id)` with a new `idx_trash_deleted_id` index. `op="import"` auto-routes to trash import when the payload carries a `"trash"` key. Closes the gap where a full local<->online migration previously could not carry over what was currently in the trash.
+> Status update (2026-09-24): Release v0.12.0 adds an optional `content_chars` parameter to `search_memory` and `list_memories` that truncates each returned memory's `content` to a preview of that many characters (positive int). Truncated memories gain `content_truncated: true` and `content_length` (original char count); full text remains available via `recall_memories`. Default (omitted / non-positive) returns full content unchanged — no breaking change. This stops listings/searches over very large memories (e.g. book-length content) from overrunning an agent's tool-result size budget. Purely presentation-layer (serialization) truncation via a new `server._apply_content_limit` helper; storage, ranking, and search behaviour are untouched. Zero new dependencies. 15-tool surface unchanged. See ADL 011.
+> Status update (2026-09-24): Release v0.13.0 extends the optional `content_chars` preview (from v0.12.0) to every remaining read/browse tool that returns memory bodies: `recall_memories` (memory + included details), `recall_related` (root + related), `connect_memories` (path), `memory_map` (nodes), and — per-item — the `list_trash` / `history` ops of `restore_memories`. Same semantics and same `server._apply_content_limit` helper; truncated items gain `content_truncated`/`content_length`. Write tools (`store_memories`, `update_memories`) and `transfer_memories`/`export_graph_html` are intentionally NOT truncated so request echoes, migrations, and backups stay full-fidelity. No breaking changes (all params optional, default = full content). Zero new dependencies. 15-tool surface unchanged. See ADL 012.
 
 ## Mandatory Workflow
 
@@ -90,6 +92,80 @@ Scope (initial intent):
   config that lives outside the git working tree (e.g. `~/.pypirc` for PyPI).
 
 ## Architecture Decision Log (ADL)
+
+### ADL 012 — Extend `content_chars` preview to all read/browse tools (2026-09-24)
+
+**Context:**
+ADL 011 (v0.12.0) added the optional `content_chars` content-preview parameter
+only to `search_memory` and `list_memories`. But other tools also return full
+memory bodies — `recall_memories`, `recall_related`, `connect_memories`,
+`memory_map`, and the `list_trash` / `history` browse ops of
+`restore_memories` — so an agent triaging memories through those paths still had
+no way to cap per-item content size and could blow its token/tool-result budget.
+
+**Decision:**
+Reuse the exact ADL 011 mechanism (`server._apply_content_limit`) across every
+read/browse surface that emits memory bodies:
+- `recall_memories`: new `content_chars` param; applied to each memory **and**
+  to each included detail (details carry `content` too).
+- `recall_related`: applied to `root` + every entry in `related`.
+- `connect_memories`: applied to every memory on `path`.
+- `memory_map`: applied to every entry in `nodes`.
+- `restore_memories`: `content_chars` accepted **per-item** on `list_trash`
+  (truncates each trashed row's embedded `memory`) and `history` (truncates
+  each version's embedded `memory`) — kept per-item because it is a
+  mixed-operation batch tool, not a single-purpose call.
+
+Deliberately excluded (must stay full-fidelity):
+- Write tools `store_memories` / `update_memories` — their output echoes the
+  caller's own input; truncating it would be surprising and lossy.
+- `transfer_memories` and `export_graph_html` — data migration / backup /
+  visualization export where any truncation would silently corrupt the
+  exported graph.
+
+**Consequences:**
+- No breaking changes: all new params are optional and default to full content;
+  the extra `content_truncated` / `content_length` keys appear only on items
+  actually truncated.
+- One shared helper keeps behaviour identical everywhere (same flags, same
+  non-mutating copy, same "truncate after ranking/traversal" ordering).
+- Zero new dependencies. 15-tool surface unchanged (parameter additions only).
+
+### ADL 011 — Optional `content_chars` content preview for `search_memory` / `list_memories` (2026-09-24)
+
+**Context:**
+`search_memory` and `list_memories` always returned each memory's **full**
+`content`. `limit`/`offset` only bound the number of rows, not per-row payload
+size. As already observed empirically during the v0.11.8 migration test, a
+small row count can still blow past a calling agent's tool-result size budget
+when individual memories hold very large content (e.g. full book-text
+sections). Agents that just want to browse/triage had no way to ask for a
+short preview without pulling every full body.
+
+**Decision:**
+Added an optional `content_chars: int | None = None` parameter to both
+`search_memory` and `list_memories`, implemented as a single presentation-layer
+helper `server._apply_content_limit(memory_dict, max_chars)`:
+- When `content_chars` is a positive int and a memory's `content` is longer, the
+  serialized `content` is truncated to that many characters and the memory gains
+  two flags — `content_truncated: true` and `content_length` (the original,
+  untruncated character count) — so the caller knows it is a preview and can
+  fetch the full text with `recall_memories`.
+- `None` (default) or a non-positive / non-int value returns full content
+  unchanged (backward compatible).
+- Truncation is non-mutating (operates on the dict copy returned to the client)
+  and happens *after* ranking/scoring, so search relevance, ordering, importance
+  and recency are computed on full content — only the returned text is trimmed.
+
+**Consequences:**
+- No breaking changes: omitting `content_chars` preserves the exact prior
+  output shape; the two extra keys appear only on memories that were actually
+  truncated.
+- Applies to the read/list surface only. `recall_memories` intentionally stays
+  full-fidelity (it is the "give me everything" path). `content_chars` was not
+  added there to keep a clear "preview vs. full" split.
+- Zero new dependencies (stdlib only). Storage, FTS5/BM25 index, and graph
+  expansion are untouched. 15-tool surface unchanged (parameter addition only).
 
 ### ADL 010 — `scope="trash"` pagination for `transfer_memories` (2026-08-28)
 

@@ -65,6 +65,34 @@ def require_absolute_file_path(value: str, *, parameter: str) -> Path:
     return path
 
 
+def _apply_content_limit(memory: dict[str, Any], max_chars: int | None) -> dict[str, Any]:
+    """Optionally truncate a memory dict's ``content`` to ``max_chars`` chars.
+
+    When ``max_chars`` is a positive int and the memory's ``content`` is longer,
+    the content is shortened and two flags are added so callers know the value
+    is a preview: ``content_truncated`` (True) and ``content_length`` (the
+    original, untruncated character count). Use ``recall_memories`` to fetch the
+    full content. When ``max_chars`` is None or non-positive, the memory is
+    returned unchanged.
+    """
+    if max_chars is None:
+        return memory
+    try:
+        limit = int(max_chars)
+    except (TypeError, ValueError):
+        return memory
+    if limit <= 0:
+        return memory
+    content = memory.get("content")
+    if isinstance(content, str) and len(content) > limit:
+        trimmed = dict(memory)
+        trimmed["content"] = content[:limit]
+        trimmed["content_truncated"] = True
+        trimmed["content_length"] = len(content)
+        return trimmed
+    return memory
+
+
 class BearerKeyMiddleware:
     """Require a configured Bearer key for every request to an ASGI app."""
 
@@ -182,6 +210,7 @@ def create_server(
         memory_ids: list[str],
         include_details: bool = False,
         include_links: bool = False,
+        content_chars: int | None = None,
     ) -> dict[str, Any]:
         """Recall one or more memories by id.
 
@@ -195,6 +224,12 @@ def create_server(
                 (each with its ``id``, usable with `edit_details`).
             include_links: Also include each memory's connections
                 (outgoing + incoming links).
+            content_chars: Optional max characters of ``content`` to return per
+                memory (and per included detail). When set (positive int),
+                longer content is truncated to a preview and each affected item
+                gains ``content_truncated`` (True) and ``content_length`` (the
+                original length); call again without it for the full text.
+                ``None`` (default) or a non-positive value returns full content.
 
         Returns:
             ``memories`` has one entry per requested id, in order, each with
@@ -206,9 +241,16 @@ def create_server(
             if mem is None:
                 results.append({"id": mid, "status": "not_found"})
                 continue
-            entry: dict[str, Any] = {"id": mid, "status": "ok", "memory": mem.to_dict()}
+            entry: dict[str, Any] = {
+                "id": mid,
+                "status": "ok",
+                "memory": _apply_content_limit(mem.to_dict(), content_chars),
+            }
             if include_details:
-                entry["details"] = [d.to_dict() for d in store.list_details(mid)]
+                entry["details"] = [
+                    _apply_content_limit(d.to_dict(), content_chars)
+                    for d in store.list_details(mid)
+                ]
             if include_links:
                 links = store.links_of(mid)
                 entry["connections"] = {
@@ -233,6 +275,7 @@ def create_server(
         limit: int = 20,
         expand: bool = True,
         mode: str = "any",
+        content_chars: int | None = None,
     ) -> dict[str, Any]:
         """Search memories like a search engine (ranked by relevance).
 
@@ -252,6 +295,12 @@ def create_server(
             expand: Also include graph-connected memories via spreading
                 activation (default True).
             mode: "any" (match any term, default) or "all" (require every term).
+            content_chars: Optional max characters of ``content`` to return per
+                memory. When set (positive int), longer content is truncated to
+                a preview and each affected memory gains ``content_truncated``
+                (True) and ``content_length`` (the original length); use
+                ``recall_memories`` for the full text. ``None`` (default) or a
+                non-positive value returns full content.
 
         Returns:
             Ranked memories; each includes ``relevance`` (0..1), ``match_type``
@@ -267,6 +316,7 @@ def create_server(
             expand=expand,
             mode=mode,
         )
+        results = [_apply_content_limit(m, content_chars) for m in results]
         return {
             "status": "ok",
             "count": len(results),
@@ -274,18 +324,27 @@ def create_server(
         }
 
     @mcp.tool()
-    def list_memories(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    def list_memories(
+        limit: int = 100, offset: int = 0, content_chars: int | None = None
+    ) -> dict[str, Any]:
         """List stored memories, most important and most recent first.
 
         Args:
             limit: Maximum number of memories to return (default 100).
             offset: Number of memories to skip (for pagination).
+            content_chars: Optional max characters of ``content`` to return per
+                memory. When set (positive int), longer content is truncated to
+                a preview and each affected memory gains ``content_truncated``
+                (True) and ``content_length`` (the original length); use
+                ``recall_memories`` for the full text. ``None`` (default) or a
+                non-positive value returns full content.
         """
         results = store.list_all(limit=limit, offset=offset)
+        memories = [_apply_content_limit(m.to_dict(), content_chars) for m in results]
         return {
             "status": "ok",
             "count": len(results),
-            "memories": [m.to_dict() for m in results],
+            "memories": memories,
         }
 
     @mcp.tool()
@@ -615,6 +674,7 @@ def create_server(
         depth: int = 1,
         relation: str | None = None,
         limit: int = 50,
+        content_chars: int | None = None,
     ) -> dict[str, Any]:
         """Recall memories connected to a memory, up to ``depth`` hops away.
 
@@ -626,10 +686,22 @@ def create_server(
             depth: How many hops to traverse (1 = direct neighbours). Default 1.
             relation: Only traverse connections of this relation type (optional).
             limit: Maximum number of related memories to return (default 50).
+            content_chars: Optional max characters of ``content`` to return per
+                memory (root + related). When set (positive int), longer content
+                is truncated to a preview and each affected memory gains
+                ``content_truncated`` (True) and ``content_length`` (the original
+                length); use ``recall_memories`` for the full text. ``None``
+                (default) or a non-positive value returns full content.
         """
         result = store.recall_related(memory_id, depth=depth, relation=relation, limit=limit)
         if result is None:
             return {"status": "not_found", "memory_id": memory_id}
+        if "root" in result:
+            result["root"] = _apply_content_limit(result["root"], content_chars)
+        if "related" in result:
+            result["related"] = [
+                _apply_content_limit(m, content_chars) for m in result["related"]
+            ]
         return {"status": "ok", **result}
 
     @mcp.tool()
@@ -637,6 +709,7 @@ def create_server(
         from_id: str,
         to_id: str,
         max_depth: int = 6,
+        content_chars: int | None = None,
     ) -> dict[str, Any]:
         """Find the shortest connection (path) between two memories.
 
@@ -647,10 +720,18 @@ def create_server(
             from_id: Source memory id.
             to_id: Target memory id.
             max_depth: Maximum path length to search (default 6).
+            content_chars: Optional max characters of ``content`` to return per
+                memory on the path. When set (positive int), longer content is
+                truncated to a preview and each affected memory gains
+                ``content_truncated`` (True) and ``content_length`` (the original
+                length); use ``recall_memories`` for the full text. ``None``
+                (default) or a non-positive value returns full content.
         """
         result = store.connect_memories(from_id, to_id, max_depth=max_depth)
         if result is None:
             return {"status": "not_found", "from_id": from_id, "to_id": to_id}
+        if result.get("path"):
+            result["path"] = [_apply_content_limit(m, content_chars) for m in result["path"]]
         return {"status": "ok", **result}
 
     @mcp.tool()
@@ -658,6 +739,7 @@ def create_server(
         memory_id: str | None = None,
         depth: int = 2,
         limit: int = 100,
+        content_chars: int | None = None,
     ) -> dict[str, Any]:
         """Return a map (nodes + links) of the memory graph.
 
@@ -666,8 +748,16 @@ def create_server(
                 otherwise map the whole graph (capped by ``limit``).
             depth: Hops to include around ``memory_id`` (default 2).
             limit: Maximum number of nodes to include (default 100).
+            content_chars: Optional max characters of ``content`` to return per
+                node. When set (positive int), longer content is truncated to a
+                preview and each affected node gains ``content_truncated`` (True)
+                and ``content_length`` (the original length); use
+                ``recall_memories`` for the full text. ``None`` (default) or a
+                non-positive value returns full content.
         """
         result = store.memory_map(memory_id, depth=depth, limit=limit)
+        if result.get("nodes"):
+            result["nodes"] = [_apply_content_limit(n, content_chars) for n in result["nodes"]]
         return {"status": "ok", **result}
 
     @mcp.tool()
@@ -724,14 +814,18 @@ def create_server(
         Each item in ``items`` is a dict with an ``op`` field selecting the
         action:
 
-        - ``{"op": "list_trash", "limit": 50}`` — list trashed (forgotten)
-          memories.
+        - ``{"op": "list_trash", "limit": 50, "content_chars": 200}`` — list
+          trashed (forgotten) memories. Optional ``content_chars`` (positive
+          int) truncates each trashed memory's ``content`` to a preview
+          (adding ``content_truncated`` / ``content_length``) to save tokens.
         - ``{"op": "restore", "memory_id": <id>}`` — bring a trashed memory
           back, including its details and valid connections.
         - ``{"op": "purge_trash", "memory_ids": [<id>...], "older_than_days": 30}``
           — permanently remove entries from the trash (irreversible).
-        - ``{"op": "history", "memory_id": <id>, "limit": 20}`` — view past
-          versions of a memory.
+        - ``{"op": "history", "memory_id": <id>, "limit": 20,
+          "content_chars": 200}`` — view past versions of a memory. Optional
+          ``content_chars`` truncates each version's ``content`` preview the
+          same way as ``list_trash``.
         - ``{"op": "rollback", "memory_id": <id>, "version_id": <ver_id>}`` —
           revert a memory to a historical version.
 
@@ -748,6 +842,11 @@ def create_server(
             if op == "list_trash":
                 limit = item.get("limit", 50)
                 trash = store.list_trash(limit=limit)
+                cc = item.get("content_chars")
+                if cc is not None:
+                    for row in trash:
+                        if isinstance(row.get("memory"), dict):
+                            row["memory"] = _apply_content_limit(row["memory"], cc)
                 results.append(
                     {
                         "index": idx,
@@ -810,6 +909,11 @@ def create_server(
                     )
                     continue
                 hist = store.history_of(mid, limit=item.get("limit", 20))
+                cc = item.get("content_chars")
+                if cc is not None:
+                    for ver in hist:
+                        if isinstance(ver.get("memory"), dict):
+                            ver["memory"] = _apply_content_limit(ver["memory"], cc)
                 results.append(
                     {
                         "index": idx,

@@ -38,19 +38,19 @@ three entities** with 15 tools.
 | Tool | Description |
 |------|-------------|
 | `store_memories` | Persist one or more memories (content, category, tags, importance). |
-| `recall_memories` | Fetch one or more memories by id; opt-in `include_details` / `include_links` for the richer payload. |
-| `search_memory` | Search-engine style: rank memories by relevance (BM25) for multi-word/long queries; also searches details; optional graph `expand`. |
-| `list_memories` | List stored memories (most important & recent first). |
+| `recall_memories` | Fetch one or more memories by id; opt-in `include_details` / `include_links` for the richer payload; optional `content_chars` to preview/truncate long content. |
+| `search_memory` | Search-engine style: rank memories by relevance (BM25) for multi-word/long queries; also searches details; optional graph `expand`; optional `content_chars` to preview/truncate long content. |
+| `list_memories` | List stored memories (most important & recent first); optional `content_chars` to preview/truncate long content. |
 | `update_memories` | Modify one or more memories (only supplied fields change). |
 | `forget_memories` | Delete one or more memories (now soft-deletes into trash for safety). |
 | `edit_details` | Add / update / delete extra facts attached to memories — mixed ops in one batch. |
 | `edit_links` | Create (`link`) / remove (`unlink`) directed connections — mixed ops in one batch. |
-| `recall_related` | Multi-hop recall: memories connected to one memory, up to *depth* hops. |
-| `connect_memories` | Shortest connection (path) between two memories. |
-| `memory_map` | Return a map (nodes + links) of the memory graph. |
+| `recall_related` | Multi-hop recall: memories connected to one memory, up to *depth* hops; optional `content_chars` to preview/truncate long content. |
+| `connect_memories` | Shortest connection (path) between two memories; optional `content_chars` to preview/truncate long content. |
+| `memory_map` | Return a map (nodes + links) of the memory graph; optional `content_chars` to preview/truncate long content. |
 | `summarize_memories` | Summary statistics: totals, categories, top tags, connection stats, most-connected memories. |
 | `export_graph_html` | Export the complete graph to a standalone interactive 3D HTML file at an absolute `output_path`. |
-| `restore_memories` | Soft-delete trash, history, rollback, and trash purge management. |
+| `restore_memories` | Soft-delete trash, history, rollback, and trash purge management; `list_trash` / `history` ops accept a per-item `content_chars` to preview/truncate long content. |
 | `transfer_memories` | Download/upload migration JSON inline across MCP servers, with optional absolute file paths and keyset pagination for large graphs. |
 
 Every list-taking tool processes items independently and reports a per-item
@@ -186,6 +186,30 @@ ranks memories by relevance, so full sentences work:
 
 Example: `search_memory("Burp Firefox proxy sync")` returns the relevant
 memories ranked, plus anything linked to them — in a single call.
+
+### Preview long content (`content_chars`)
+
+Every read/browse tool that returns memory bodies accepts an optional
+`content_chars` (positive int) parameter that truncates each memory's `content`
+to a preview of that many characters instead of returning the full body — handy
+for saving an agent's token/tool-result budget when browsing large memories
+(e.g. book-length content). It is available on:
+
+- `search_memory` and `list_memories`
+- `recall_memories` (applies to the memory **and** any included details)
+- `recall_related` (root + related memories)
+- `connect_memories` (memories on the path)
+- `memory_map` (nodes)
+- `restore_memories` — per-item on the `list_trash` and `history` ops
+
+Any item that gets truncated also gains `content_truncated: true` and
+`content_length` (the original character count), so callers know there is more
+and can fetch the full text with `recall_memories`. Omit it (or pass a
+non-positive value) to keep the full content — the default is unchanged.
+
+Write tools (`store_memories`, `update_memories`) and `transfer_memories`
+deliberately **do not** truncate, so request echoes and graph migrations stay
+full-fidelity.
 
 ## Install
 
