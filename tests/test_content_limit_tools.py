@@ -104,6 +104,36 @@ def test_memory_map_truncates_nodes(server):
     assert all(len(n["content"]) == 25 for n in out["nodes"])
 
 
+def test_recall_memories_content_offset_window(server):
+    ids = _store_two(server)
+    out = _fn(server, "recall_memories")(memory_ids=[ids[0]], content_chars=10, content_offset=5)
+    mem = out["memories"][0]["memory"]
+    assert mem["content"] == LONG[5:15]
+    assert len(mem["content"]) == 10
+    assert mem["content_truncated"] is True
+    assert mem["content_length"] == 500
+    assert mem["content_offset"] == 5
+
+
+def test_search_memory_content_offset_paging(server):
+    _store_two(server)
+    page1 = _fn(server, "search_memory")(query="", content_chars=100, content_offset=0)
+    page2 = _fn(server, "search_memory")(query="", content_chars=100, content_offset=100)
+    m1, m2 = page1["memories"][0], page2["memories"][0]
+    assert m1["content"] == LONG[0:100]
+    assert m2["content"] == LONG[100:200]
+    assert "content_offset" not in m1  # offset 0
+    assert m2["content_offset"] == 100
+
+
+def test_memory_map_content_offset(server):
+    _store_two(server)
+    out = _fn(server, "memory_map")(content_chars=20, content_offset=30)
+    node = out["nodes"][0]
+    assert node["content"] == LONG[30:50]
+    assert node["content_offset"] == 30
+
+
 def test_restore_list_trash_and_history_truncate(server):
     ids = _store_two(server)
     # create a history version, then forget to populate trash

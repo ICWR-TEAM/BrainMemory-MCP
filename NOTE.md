@@ -4,7 +4,7 @@
 
 Project Start Date: 2026-07-21
 Last Update Project: 2026-09-24
-Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.13.0)
+Project Phase: MVP + published — graph-backed dual-transport server on PyPI (v0.13.1)
 Project Status: Active — installable Python MCP server (stdio default + SSE --web); optional Bearer authorization for web mode via `--key` / `BRAINMEMORY_KEY`; memory is a SQLite knowledge graph with FTS5/BM25 + graph-augmented search; 15-tool surface with full CRUD over memories/details/links, soft-delete safety net (trash/history/rollback), standalone 3D graph visualization HTML export with one absolute output file path, and transport-safe inline migration download/upload with keyset `limit`/`cursor`/`scope` pagination for large active graphs and exact trash snapshots, plus optional server-local files over stdio and HTTP/SSE.
 
 ---
@@ -73,6 +73,7 @@ Scope (initial intent):
 > Status update (2026-08-28): Release v0.11.9 extends `transfer_memories` pagination to soft-deleted memories: new `scope="trash"` on `op="export"` (paired with `store.export_trash`/`store.import_trash`) exports/imports exact `memory_trash` snapshots (id, `deleted_at`, embedded memory/details/links) with the same keyset `limit`/`cursor` mechanics as `scope="memories"`/`scope="links"`, keyed on `(deleted_at, id)` with a new `idx_trash_deleted_id` index. `op="import"` auto-routes to trash import when the payload carries a `"trash"` key. Closes the gap where a full local<->online migration previously could not carry over what was currently in the trash.
 > Status update (2026-09-24): Release v0.12.0 adds an optional `content_chars` parameter to `search_memory` and `list_memories` that truncates each returned memory's `content` to a preview of that many characters (positive int). Truncated memories gain `content_truncated: true` and `content_length` (original char count); full text remains available via `recall_memories`. Default (omitted / non-positive) returns full content unchanged — no breaking change. This stops listings/searches over very large memories (e.g. book-length content) from overrunning an agent's tool-result size budget. Purely presentation-layer (serialization) truncation via a new `server._apply_content_limit` helper; storage, ranking, and search behaviour are untouched. Zero new dependencies. 15-tool surface unchanged. See ADL 011.
 > Status update (2026-09-24): Release v0.13.0 extends the optional `content_chars` preview (from v0.12.0) to every remaining read/browse tool that returns memory bodies: `recall_memories` (memory + included details), `recall_related` (root + related), `connect_memories` (path), `memory_map` (nodes), and — per-item — the `list_trash` / `history` ops of `restore_memories`. Same semantics and same `server._apply_content_limit` helper; truncated items gain `content_truncated`/`content_length`. Write tools (`store_memories`, `update_memories`) and `transfer_memories`/`export_graph_html` are intentionally NOT truncated so request echoes, migrations, and backups stay full-fidelity. No breaking changes (all params optional, default = full content). Zero new dependencies. 15-tool surface unchanged. See ADL 012.
+> Status update (2026-09-24): Release v0.13.1 turns the `content_chars` preview into a movable window by adding an optional `content_offset` (0-based start char, default 0) to the same tools (`search_memory`, `list_memories`, `recall_memories` [memory + details], `recall_related`, `connect_memories`, `memory_map`, and per-item on `restore_memories` `list_trash`/`history`). `content_offset` + `content_chars` return `content[offset:offset+chars]` so callers can page through long content (e.g. offset=200, chars=200 → chars 200..399); `content_chars` alone still starts at 0. When offset>0 the returned item also carries `content_offset`. `_apply_content_limit` gained the offset arg (negative→0, offset beyond end→empty string). No breaking changes (all optional; offset defaults to 0 = prior behaviour). Zero new dependencies. 15-tool surface unchanged. See ADL 013.
 
 ## Mandatory Workflow
 
@@ -92,6 +93,39 @@ Scope (initial intent):
   config that lives outside the git working tree (e.g. `~/.pypirc` for PyPI).
 
 ## Architecture Decision Log (ADL)
+
+### ADL 013 — `content_offset` movable-window preview (2026-09-24)
+
+**Context:**
+ADL 011/012 added `content_chars`, but it always previews from the *start* of a
+memory's content. A user wanted to read an arbitrary slice — "start at char N,
+give me M chars" — to page through very long memories (e.g. book-length
+sections) without pulling the whole body, while keeping the current
+"from the beginning" behaviour as the default.
+
+**Decision:**
+Extended the same helper `server._apply_content_limit(memory, max_chars,
+offset=None)` with an `offset` argument, and threaded a new optional
+`content_offset` parameter through every tool that already accepts
+`content_chars` (`search_memory`, `list_memories`, `recall_memories` — memory
+and included details, `recall_related`, `connect_memories`, `memory_map`, and
+per-item on `restore_memories` `list_trash`/`history`).
+- Semantics: returns `content[offset : offset+max_chars]`; with `max_chars`
+  omitted the slice runs to the end from `offset`. `offset` defaults to 0
+  (unchanged behaviour). Negative offset is clamped to 0; an offset past the
+  end yields an empty string (still flagged).
+- Flags: a windowed result carries `content_truncated: true`,
+  `content_length` (original length), and — only when `offset` > 0 —
+  `content_offset` (the start used), so an offset-0 preview is byte-identical
+  to the pre-0.13.1 output shape.
+
+**Consequences:**
+- No breaking changes: `content_offset` is optional and defaults to 0; existing
+  `content_chars`-only calls behave exactly as in v0.13.0.
+- Enables client-side paging over large content in bounded slices without a new
+  tool or storage change; ranking/traversal still run on full content, only the
+  serialized slice is windowed.
+- Zero new dependencies. 15-tool surface unchanged (parameter addition only).
 
 ### ADL 012 — Extend `content_chars` preview to all read/browse tools (2026-09-24)
 

@@ -51,6 +51,13 @@ plus the ``list_trash`` / ``history`` ops of ``restore_memories`` (per-item
 ``content_chars``). Write tools and ``transfer_memories`` deliberately stay
 full-fidelity so echoes and migrations are never truncated.
 
+Since v0.13.1 those same tools also accept an optional ``content_offset`` (a
+0-based start character, default 0) alongside ``content_chars`` (a length cap),
+turning the preview into a movable window so callers can page through long
+content (e.g. ``content_offset=200, content_chars=200`` returns characters
+200..399). When ``content_offset`` > 0 the returned item also carries a
+``content_offset`` field.
+
 Runs over stdio by default (ideal for ``uvx brainmemory-mcp``); use ``--web``
 to serve over HTTP + SSE. Memory is persisted locally under
 ``~/.brainmemory-mcp``.
@@ -58,7 +65,7 @@ to serve over HTTP + SSE. Memory is persisted locally under
 
 from __future__ import annotations
 
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 
 from .memory import (
     Memory,

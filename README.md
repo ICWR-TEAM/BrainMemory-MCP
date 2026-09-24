@@ -207,6 +207,14 @@ Any item that gets truncated also gains `content_truncated: true` and
 and can fetch the full text with `recall_memories`. Omit it (or pass a
 non-positive value) to keep the full content — the default is unchanged.
 
+Since v0.13.1 the same tools also accept an optional `content_offset` (a 0-based
+start character, default `0` = from the beginning) alongside `content_chars`
+(the length cap). Together they form a movable window so you can *page through*
+long content — e.g. `content_offset=200, content_chars=200` returns characters
+200–399. When `content_offset > 0` the returned item also carries a
+`content_offset` field. (For `restore_memories`, pass `content_offset` per-item
+on the `list_trash` / `history` ops, same as `content_chars`.)
+
 Write tools (`store_memories`, `update_memories`) and `transfer_memories`
 deliberately **do not** truncate, so request echoes and graph migrations stay
 full-fidelity.
